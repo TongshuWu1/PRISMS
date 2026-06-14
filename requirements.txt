@@ -1,0 +1,4 @@
+coppeliasim-zmqremoteapi-client>=2,<3
+pyzmq
+cbor2
+pygame>=2.5

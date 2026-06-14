@@ -1,0 +1,61 @@
+{
+  "configuration": "square_face_predocked_pair_space_thrust",
+  "description": "Two independent dynamic drone modules in the square-face pose for Space-thrust and magnetic-docking controller tests.",
+  "outputs": {
+    "model_ttm": "C:\\Users\\wts28\\Documents\\PHD\\Projects\\truncated_octahedral_drone\\configurations\\square_face_predocked_pair\\model\\predocked_square_face_pair_space_thrust_plant.ttm",
+    "scene_ttt": "C:\\Users\\wts28\\Documents\\PHD\\Projects\\truncated_octahedral_drone\\configurations\\square_face_predocked_pair\\scene\\predocked_square_face_pair_space_thrust.ttt"
+  },
+  "root_alias": "predocked_space_thrust_pair",
+  "drone_aliases": [
+    "drone_a",
+    "drone_b"
+  ],
+  "mass_per_drone_kg": 0.06,
+  "docking_face": "pos_xy_to_neg_xy",
+  "docking_face_normal_world": [
+    0.707106781,
+    0.707106781,
+    0.0
+  ],
+  "gap_m": 0.03,
+  "square_face_support_m": 0.08,
+  "height_m": 0.5,
+  "drone_a_translation_m": [
+    -0.067175144,
+    -0.067175144,
+    0.5
+  ],
+  "drone_b_translation_m": [
+    0.067175144,
+    0.067175144,
+    0.5
+  ],
+  "collision": {
+    "rod_count_per_drone": 36,
+    "node_count_per_drone": 24,
+    "rod_diameter_m": 0.003,
+    "node_diameter_m": 0.008,
+    "body_box_m": [
+      0.09,
+      0.09,
+      0.026
+    ]
+  },
+  "propellers": {
+    "spinning_joint_count": 8,
+    "forward_propeller_indices_per_drone": [
+      0,
+      2
+    ],
+    "rear_propeller_indices_per_drone": [
+      1,
+      3
+    ]
+  },
+  "notes": [
+    "This is a dynamic plant; docking forces, latch state, and break limits are applied by external Python controllers.",
+    "Each drone receives its own low-level motor mixer and force/torque application.",
+    "Use controller/magnetic_docking_pair_test.py for connector-level magnet and virtual latch dynamics.",
+    "Use the inspection model for pure docking-geometry review."
+  ]
+}

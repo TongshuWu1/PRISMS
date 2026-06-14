@@ -1,0 +1,95 @@
+{
+  "configuration": "square_face_predocked_pair",
+  "description": "Two upright complete drone modules, diagonally placed through opposing vertical square/diamond faces.",
+  "outputs": {
+    "model_ttm": "C:\\Users\\wts28\\Documents\\PHD\\Projects\\truncated_octahedral_drone\\configurations\\square_face_predocked_pair\\model\\predocked_square_face_pair.ttm",
+    "scene_ttt": "C:\\Users\\wts28\\Documents\\PHD\\Projects\\truncated_octahedral_drone\\configurations\\square_face_predocked_pair\\scene\\predocked_square_face_pair_inspection.ttt"
+  },
+  "color_method": "CoppeliaSim sim.setShapeColor, matching the single-drone generator.",
+  "colors_rgb": {
+    "crazyflie_body": [
+      0.62,
+      0.68,
+      0.6
+    ],
+    "carbon_fiber_cage_rods": [
+      0.005,
+      0.005,
+      0.005
+    ],
+    "corner_connectors": [
+      0.95,
+      0.02,
+      0.01
+    ],
+    "forward_propellers_local_pos_x": [
+      0.95,
+      0.02,
+      0.01
+    ],
+    "rear_propellers_local_neg_x": [
+      0.03,
+      0.03,
+      0.03
+    ]
+  },
+  "forward_direction_convention": "Each drone's local +X direction is forward. Propellers with positive local x are red.",
+  "forward_propeller_indices": [
+    0,
+    2
+  ],
+  "rear_propeller_indices": [
+    1,
+    3
+  ],
+  "source_body_stl": "C:\\Users\\wts28\\Documents\\PHD\\Projects\\truncated_octahedral_drone\\assets\\meshes\\crazyflie_cage_body_no_propellers.stl",
+  "source_propeller_stl": "C:\\Users\\wts28\\Documents\\PHD\\Projects\\truncated_octahedral_drone\\assets\\meshes\\crazyflie_propellers_aligned.stl",
+  "docking_face": "pos_xy_to_neg_xy",
+  "docking_face_normal_world": [
+    0.707106781,
+    0.707106781,
+    0.0
+  ],
+  "gap_m": 0.001,
+  "square_face_support_m": 0.08,
+  "height_m": 0.5,
+  "drone_a_translation_m": [
+    -0.056922096,
+    -0.056922096,
+    0.5
+  ],
+  "drone_b_translation_m": [
+    0.056922096,
+    0.056922096,
+    0.5
+  ],
+  "measured_square_face_gap_m": 0.0010000000000000009,
+  "pair_full_bounds_m": {
+    "min": [
+      -0.14497491,
+      -0.144894679,
+      0.4168
+    ],
+    "max": [
+      0.14497491,
+      0.144894679,
+      0.5832
+    ],
+    "size": [
+      0.289949819,
+      0.289789358,
+      0.1664
+    ],
+    "center": [
+      0.0,
+      0.0,
+      0.5
+    ]
+  },
+  "notes": [
+    "Inspection-only geometry: no controller, no latch, no dynamics.",
+    "Both modules remain upright at nominal attitude.",
+    "The chosen docking faces are actual vertical square faces of the truncated-octahedral cage.",
+    "The modules are placed diagonally in XY so A's +face normal opposes B's -face normal."
+  ]
+}

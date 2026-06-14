@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.venv/
+.idea/
+logs/*.csv
+coppeliasim_build/
