@@ -17,6 +17,9 @@ class AllocationResult:
     wrench_achieved: list[float]
     residual: list[float]
     residual_norm: float
+    wrench_weights: list[float]
+    weighted_residual: list[float]
+    weighted_residual_norm: float
     rank: int
     saturated_count: int
     matrix: list[list[float]]
@@ -32,6 +35,10 @@ def _cross(a: Sequence[float], b: Sequence[float]) -> list[float]:
 
 def _mat_vec(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -> list[float]:
     return [sum(row[col] * vector[col] for col in range(len(vector))) for row in matrix]
+
+
+def _weighted_rows(matrix: Sequence[Sequence[float]], weights: Sequence[float]) -> list[list[float]]:
+    return [[weights[row] * value for value in matrix[row]] for row in range(len(matrix))]
 
 
 def _transpose(matrix: Sequence[Sequence[float]]) -> list[list[float]]:
@@ -87,6 +94,17 @@ def _rank(matrix: Sequence[Sequence[float]], relative_tolerance: float = 1e-9) -
     return rank
 
 
+def _wrench_weights(weights: Sequence[float] | None) -> list[float]:
+    if weights is None:
+        return [1.0 for _ in range(6)]
+    parsed = [float(value) for value in weights]
+    if len(parsed) != 6:
+        raise ValueError("wrench_weights must contain six values.")
+    if any(value <= 0.0 for value in parsed):
+        raise ValueError("wrench_weights must be strictly positive. Use small positive values instead of zero.")
+    return parsed
+
+
 def build_allocation_matrix(
     geometry: AssemblyGeometry,
     max_motor_speed: float,
@@ -114,13 +132,14 @@ def allocate_wrench(
     max_thrust: float,
     yaw_drag_arm: float,
     regularization: float = 1e-6,
+    wrench_weights: Sequence[float] | None = None,
 ) -> AllocationResult:
     """Allocate a world-frame assembly wrench to nonnegative motor speeds.
 
-    The solve uses a damped pseudoinverse on omega squared, then clips each
-    motor to the physical range. This is the same control-allocation layer used
-    in modular multirotor work: geometry enters only through motor positions
-    and thrust axes relative to the assembly COM.
+    The solve uses a weighted damped pseudoinverse on omega squared, then clips
+    each motor to the physical range. Geometry enters only through motor
+    positions and thrust axes relative to the assembly COM; infeasible wrench
+    components remain visible in the returned residual.
     """
 
     desired = [float(value) for value in wrench_cmd]
@@ -131,10 +150,13 @@ def allocate_wrench(
         raise ValueError("Cannot allocate a wrench for an assembly with no motors.")
 
     allocation = build_allocation_matrix(geometry, max_motor_speed, max_thrust, yaw_drag_arm)
-    transposed = _transpose(allocation)
+    weights = _wrench_weights(wrench_weights)
+    weighted_allocation = _weighted_rows(allocation, weights)
+    weighted_desired = [weights[row] * desired[row] for row in range(6)]
+    transposed = _transpose(weighted_allocation)
     base_gram = [
         [
-            sum(allocation[row][col] * allocation[other][col] for col in range(len(geometry.motors)))
+            sum(weighted_allocation[row][col] * weighted_allocation[other][col] for col in range(len(geometry.motors)))
             for other in range(6)
         ]
         for row in range(6)
@@ -145,7 +167,7 @@ def allocate_wrench(
     gram = [row[:] for row in base_gram]
     for row in range(6):
         gram[row][row] += damping
-    y = _solve_linear_system(gram, desired)
+    y = _solve_linear_system(gram, weighted_desired)
 
     omega_squared_cmd = [sum(transposed[col][row] * y[row] for row in range(6)) for col in range(len(transposed))]
     max_omega_squared = max_motor_speed * max_motor_speed
@@ -162,6 +184,8 @@ def allocate_wrench(
     achieved = _mat_vec(allocation, clipped)
     residual = [desired[row] - achieved[row] for row in range(6)]
     residual_norm = math.sqrt(sum(value * value for value in residual))
+    weighted_residual = [weights[row] * residual[row] for row in range(6)]
+    weighted_residual_norm = math.sqrt(sum(value * value for value in weighted_residual))
     return AllocationResult(
         motor_omega_cmd=motor_omega_cmd,
         motor_thrust_cmd=motor_thrust_cmd,
@@ -169,6 +193,9 @@ def allocate_wrench(
         wrench_achieved=achieved,
         residual=residual,
         residual_norm=residual_norm,
+        wrench_weights=weights,
+        weighted_residual=weighted_residual,
+        weighted_residual_norm=weighted_residual_norm,
         rank=_rank(allocation),
         saturated_count=saturated_count,
         matrix=allocation,

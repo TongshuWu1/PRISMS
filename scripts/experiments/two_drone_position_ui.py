@@ -32,6 +32,8 @@ DEFAULT_BODY_STL = PROJECT_ROOT / "assets" / "meshes" / "crazyflie_cage_body_no_
 TARGET_ALIAS_PREFIX = "ui_target"
 HOVER_TARGET_PREFIX = "hover_target"
 MAGNET_VISUAL_PREFIX = "magnet_visual"
+ASSEMBLY_FORCE_ARROW_PREFIX = "assembly_force_arrow"
+ASSEMBLY_FORCE_ARROW_COLOR = (0.0, 0.85, 1.0)
 
 
 @dataclass
@@ -209,7 +211,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-visual-update-period", type=float, default=0.05)
     parser.add_argument("--marker-update-period", type=float, default=0.10)
     parser.add_argument("--docked-controller", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--assembly-force-arrow",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show the net docked-assembly force vector at the assembly center of mass.",
+    )
+    parser.add_argument(
+        "--assembly-force-arrow-source",
+        choices=("achieved", "command", "residual"),
+        default="achieved",
+        help="Force vector to visualize: allocated achieved force, requested command force, or allocation residual.",
+    )
+    parser.add_argument(
+        "--assembly-force-arrow-scale",
+        type=float,
+        default=0.18,
+        help="Arrow length per Newton for the docked assembly force visualizer [m/N].",
+    )
+    parser.add_argument("--assembly-force-arrow-min-length", type=float, default=0.030)
+    parser.add_argument("--assembly-force-arrow-max-length", type=float, default=0.350)
+    parser.add_argument("--assembly-force-arrow-head-length", type=float, default=0.035)
+    parser.add_argument("--assembly-force-arrow-radius", type=float, default=0.004)
+    parser.add_argument(
+        "--assembly-force-arrow-update-period",
+        type=float,
+        default=0.030,
+        help="Minimum simulation time between assembly force arrow updates [s].",
+    )
     parser.add_argument("--allocation-regularization", type=float, default=1e-6)
+    parser.add_argument("--allocation-weight-force-x", type=float, default=1.0)
+    parser.add_argument("--allocation-weight-force-y", type=float, default=1.0)
+    parser.add_argument("--allocation-weight-force-z", type=float, default=1.0)
+    parser.add_argument("--allocation-weight-torque-x", type=float, default=1.0)
+    parser.add_argument("--allocation-weight-torque-y", type=float, default=1.0)
+    parser.add_argument("--allocation-weight-torque-z", type=float, default=1.0)
     parser.add_argument("--assembly-control-ramp-time", type=float, default=0.45)
     parser.add_argument("--assembly-attitude-torque-gain-rp", type=float, default=0.018)
     parser.add_argument("--assembly-attitude-torque-gain-yaw", type=float, default=0.004)
@@ -217,6 +253,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--assembly-rate-damping-yaw", type=float, default=0.0025)
     parser.add_argument("--assembly-torque-limit-rp", type=float, default=0.020)
     parser.add_argument("--assembly-torque-limit-yaw", type=float, default=0.007)
+    parser.add_argument("--module-inertia-length-x", type=float, default=0.176, help="Module inertia box x length [m].")
+    parser.add_argument("--module-inertia-length-y", type=float, default=0.176, help="Module inertia box y length [m].")
+    parser.add_argument("--module-inertia-length-z", type=float, default=0.166, help="Module inertia box z length [m].")
+    parser.add_argument(
+        "--assembly-inertia-aware-torque",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Shape docked attitude torque through the full assembly inertia tensor.",
+    )
+    parser.add_argument(
+        "--assembly-gyroscopic-compensation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Add omega x J omega compensation when inertia-aware assembly torque is enabled.",
+    )
     telemetry.add_logging_args(parser)
     return parser.parse_args()
 
@@ -245,6 +296,7 @@ def remove_old_targets(sim) -> None:
             tail.startswith(TARGET_ALIAS_PREFIX)
             or tail.startswith(HOVER_TARGET_PREFIX)
             or tail.startswith(MAGNET_VISUAL_PREFIX)
+            or tail.startswith(ASSEMBLY_FORCE_ARROW_PREFIX)
         ):
             to_remove.append(handle)
     if to_remove:
@@ -321,6 +373,117 @@ class LatchedCornerColorizer:
         self.active_count = marker_index
 
 
+class AssemblyForceArrowVisualizer:
+    FORCE_FIELDS = {
+        "achieved": "wrench_achieved",
+        "command": "wrench_cmd",
+        "residual": "wrench_residual",
+    }
+
+    def __init__(self, sim, args: argparse.Namespace) -> None:
+        self.sim = sim
+        self.source = str(args.assembly_force_arrow_source)
+        self.length_scale = max(0.0, float(args.assembly_force_arrow_scale))
+        self.radius = max(0.0002, float(args.assembly_force_arrow_radius))
+        self.head_length = max(0.004, float(args.assembly_force_arrow_head_length))
+        self.min_length = max(self.head_length + 0.001, float(args.assembly_force_arrow_min_length))
+        self.max_length = max(self.min_length, float(args.assembly_force_arrow_max_length))
+        self.arrow_handles: dict[str, tuple[int, int]] = {}
+        self.stem_lengths: dict[str, float] = {}
+        self.active_keys: set[str] = set()
+
+    def configure_shape(self, handle: int) -> None:
+        self.sim.setShapeColor(handle, None, self.sim.colorcomponent_ambient_diffuse, list(ASSEMBLY_FORCE_ARROW_COLOR))
+        self.sim.setShapeColor(handle, None, self.sim.colorcomponent_emission, [0.00, 0.08, 0.10])
+        self.sim.setObjectInt32Param(handle, self.sim.shapeintparam_static, 1)
+        self.sim.setObjectInt32Param(handle, self.sim.shapeintparam_respondable, 0)
+        self.sim.setObjectInt32Param(handle, self.sim.objintparam_visibility_layer, 0)
+
+    def create_arrow(self, key: str) -> tuple[int, int]:
+        stem_length = max(0.001, self.min_length - self.head_length)
+        stem = self.sim.createPrimitiveShape(
+            self.sim.primitiveshape_cylinder,
+            [2.0 * self.radius, 2.0 * self.radius, stem_length],
+            0,
+        )
+        self.sim.setObjectAlias(stem, f"{ASSEMBLY_FORCE_ARROW_PREFIX}_{key}_stem", 1)
+        self.configure_shape(stem)
+
+        head = self.sim.createPrimitiveShape(
+            self.sim.primitiveshape_cone,
+            [4.0 * self.radius, 4.0 * self.radius, self.head_length],
+            0,
+        )
+        self.sim.setObjectAlias(head, f"{ASSEMBLY_FORCE_ARROW_PREFIX}_{key}_head", 1)
+        self.configure_shape(head)
+
+        handles = (int(stem), int(head))
+        self.arrow_handles[key] = handles
+        self.stem_lengths[key] = stem_length
+        return handles
+
+    def ensure_arrow(self, key: str) -> tuple[int, int]:
+        if key not in self.arrow_handles:
+            return self.create_arrow(key)
+        return self.arrow_handles[key]
+
+    def hide_key(self, key: str) -> None:
+        if key not in self.arrow_handles:
+            return
+        stem, head = self.arrow_handles[key]
+        for handle in (stem, head):
+            self.sim.setObjectInt32Param(handle, self.sim.objintparam_visibility_layer, 0)
+
+    def clear(self) -> None:
+        for key in list(self.active_keys):
+            self.hide_key(key)
+        self.active_keys.clear()
+
+    def force_vector(self, sample: dict[str, object]) -> list[float]:
+        field = self.FORCE_FIELDS[self.source]
+        values = sample[field]
+        return [float(values[axis]) for axis in range(3)]  # type: ignore[index]
+
+    def force_length(self, force: list[float]) -> float:
+        return max(self.min_length, min(self.max_length, vector_norm3(force) * self.length_scale))
+
+    def update(self, allocation_by_group: dict[str, object]) -> None:
+        active: set[str] = set()
+        for raw_key, raw_sample in sorted(allocation_by_group.items()):
+            sample = raw_sample  # type: ignore[assignment]
+            key = str(raw_key)
+            force = self.force_vector(sample)  # type: ignore[arg-type]
+            force_norm = vector_norm3(force)
+            if force_norm < 1e-9:
+                self.hide_key(key)
+                continue
+
+            base = [float(value) for value in sample["assembly_pos"]]  # type: ignore[index]
+            direction = vector_scale3(force, 1.0 / force_norm)
+            total_length = self.force_length(force)
+            stem_length = max(0.001, total_length - self.head_length)
+            stem, head = self.ensure_arrow(key)
+            old_stem_length = self.stem_lengths[key]
+            if abs(stem_length - old_stem_length) > 1e-5:
+                self.sim.scaleObject(stem, 1.0, 1.0, stem_length / old_stem_length, 0)
+                self.stem_lengths[key] = stem_length
+
+            stem_center = [base[axis] + 0.5 * stem_length * direction[axis] for axis in range(3)]
+            head_center = [
+                base[axis] + (stem_length + 0.5 * self.head_length) * direction[axis]
+                for axis in range(3)
+            ]
+            self.sim.setObjectMatrix(stem, -1, world_matrix_from_z_axis(stem_center, direction))
+            self.sim.setObjectMatrix(head, -1, world_matrix_from_z_axis(head_center, direction))
+            for handle in (stem, head):
+                self.sim.setObjectInt32Param(handle, self.sim.objintparam_visibility_layer, 1)
+            active.add(key)
+
+        for key in self.active_keys - active:
+            self.hide_key(key)
+        self.active_keys = active
+
+
 def latched_corner_visual_keys(
     sim,
     drones: list[multi.DroneAgent],
@@ -335,6 +498,25 @@ def latched_corner_visual_keys(
 
 def hover_omega(args: argparse.Namespace) -> float:
     return math.sqrt((args.mass * flight.G / 4.0) / (args.max_thrust / args.max_motor_speed**2))
+
+
+def module_inertia_box(args: argparse.Namespace) -> tuple[float, float, float]:
+    return (
+        float(args.module_inertia_length_x),
+        float(args.module_inertia_length_y),
+        float(args.module_inertia_length_z),
+    )
+
+
+def allocation_weights(args: argparse.Namespace) -> list[float]:
+    return [
+        float(args.allocation_weight_force_x),
+        float(args.allocation_weight_force_y),
+        float(args.allocation_weight_force_z),
+        float(args.allocation_weight_torque_x),
+        float(args.allocation_weight_torque_y),
+        float(args.allocation_weight_torque_z),
+    ]
 
 
 def format_vector(values: list[float] | tuple[float, float, float]) -> str:
@@ -366,6 +548,43 @@ def rotate_z(vector: list[float], yaw: float) -> list[float]:
 
 def dot3(a: list[float] | tuple[float, float, float], b: list[float] | tuple[float, float, float]) -> float:
     return float(a[0]) * float(b[0]) + float(a[1]) * float(b[1]) + float(a[2]) * float(b[2])
+
+
+def vector_norm3(vector: list[float] | tuple[float, float, float]) -> float:
+    return math.sqrt(dot3(vector, vector))
+
+
+def vector_scale3(vector: list[float], scale: float) -> list[float]:
+    return [value * scale for value in vector]
+
+
+def vector_cross3(a: list[float], b: list[float]) -> list[float]:
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+
+
+def normalized3(vector: list[float]) -> list[float]:
+    norm = vector_norm3(vector)
+    if norm < 1e-12:
+        raise ValueError("Cannot normalize zero-length vector.")
+    return vector_scale3(vector, 1.0 / norm)
+
+
+def world_matrix_from_z_axis(center: list[float], z_axis: list[float]) -> list[float]:
+    z_axis = normalized3(z_axis)
+    reference = [0.0, 0.0, 1.0]
+    if abs(dot3(reference, z_axis)) > 0.95:
+        reference = [0.0, 1.0, 0.0]
+    x_axis = normalized3(vector_cross3(reference, z_axis))
+    y_axis = vector_cross3(z_axis, x_axis)
+    return [
+        x_axis[0], y_axis[0], z_axis[0], center[0],
+        x_axis[1], y_axis[1], z_axis[1], center[1],
+        x_axis[2], y_axis[2], z_axis[2], center[2],
+    ]
 
 
 def unit_xy_from_heading(heading: float) -> list[float]:
@@ -806,6 +1025,7 @@ def update_group_command_to_current(
         sim,
         [controlled[index].drone for index in command.key],
         args.mass,
+        module_inertia_box(args),
     )
     assembly_geometric.reset_to_current(command.state, assembly_geom, command.yaw)
     apply_group_command(controlled, command, immediate=True)
@@ -848,6 +1068,7 @@ def refresh_group_commands(
             sim,
             [controlled[index].drone for index in key],
             args.mass,
+            module_inertia_box(args),
         )
         assembly_geometric.reset_to_current(command.state, assembly_geom, command.yaw)
         apply_group_command(controlled, command, immediate=True)
@@ -1406,6 +1627,7 @@ class MultiDronePositionUI:
                 control_gain = 0.0
                 allocation_rank = 0
                 allocation_residual = 0.0
+                allocation_weighted_residual = 0.0
                 allocation_saturated = 0
                 first_sample = high_samples[key[0]]
                 if first_sample is not None:
@@ -1414,6 +1636,9 @@ class MultiDronePositionUI:
                     control_gain = float(first_sample.get("control_gain", 0.0))
                     allocation_rank = int(first_sample.get("allocation_rank", 0))
                     allocation_residual = float(first_sample.get("allocation_residual_norm", 0.0))
+                    allocation_weighted_residual = float(
+                        first_sample.get("allocation_weighted_residual_norm", 0.0)
+                    )
                     allocation_saturated = int(first_sample.get("allocation_saturated", 0))
                 lines.append(
                     f"  {self.group_label(group_index, key, command):18s} "
@@ -1428,7 +1653,8 @@ class MultiDronePositionUI:
                 )
                 lines.append(
                     f"    assembly: gain={control_gain:.2f} alloc_rank={allocation_rank} "
-                    f"residual={allocation_residual:.3f} saturated_motors={allocation_saturated}"
+                    f"residual={allocation_residual:.3f} weighted={allocation_weighted_residual:.3f} "
+                    f"saturated_motors={allocation_saturated}"
                 )
                 lines.append(f"    member heading: {heading_summary(controlled, key, command.yaw)}")
         else:
@@ -1505,8 +1731,12 @@ def docked_high_samples_for_ui(
                 "assembly_target": assembly_target,
                 "assembly_pos_error": assembly_pos_error,
                 "allocation_residual_norm": allocation.residual_norm,
+                "allocation_weighted_residual_norm": allocation.weighted_residual_norm,
                 "allocation_rank": allocation.rank,
                 "allocation_saturated": allocation.saturated_count,
+                "wrench_weights": allocation.wrench_weights,
+                "wrench_residual": allocation.residual,
+                "wrench_weighted_residual": allocation.weighted_residual,
                 "control_mode": "docked_allocation",
             }
         )
@@ -1522,7 +1752,12 @@ def docked_allocation_step(
     target_position: list[float],
     target_yaw: float,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
-    assembly_geom = allocation_geometry.build_assembly_geometry(sim, [item.drone for item in controlled], args.mass)
+    assembly_geom = allocation_geometry.build_assembly_geometry(
+        sim,
+        [item.drone for item in controlled],
+        args.mass,
+        module_inertia_box(args),
+    )
     assembly_sample = assembly_geometric.controller_step(
         sim,
         assembly_geom,
@@ -1538,6 +1773,7 @@ def docked_allocation_step(
         args.max_thrust,
         args.yaw_drag_arm,
         args.allocation_regularization,
+        allocation_weights(args),
     )
     low_samples: list[dict[str, object]] = []
     for index, item in enumerate(controlled):
@@ -1547,12 +1783,19 @@ def docked_allocation_step(
         )
     high_samples = docked_high_samples_for_ui(sim, controlled, assembly_sample, allocation)
     allocation_sample = {
+        "members": [item.drone.index for item in controlled],
+        "assembly_pos": assembly_sample["pos"],
+        "assembly_target": assembly_sample["target"],
+        "assembly_pos_error": assembly_sample["pos_error"],
         "allocation_rank": allocation.rank,
         "allocation_residual_norm": allocation.residual_norm,
+        "allocation_weighted_residual_norm": allocation.weighted_residual_norm,
         "allocation_saturated": allocation.saturated_count,
+        "wrench_weights": allocation.wrench_weights,
         "wrench_cmd": allocation.wrench_cmd,
         "wrench_achieved": allocation.wrench_achieved,
         "wrench_residual": allocation.residual,
+        "wrench_weighted_residual": allocation.weighted_residual,
     }
     return high_samples, low_samples, allocation_sample
 
@@ -1601,6 +1844,7 @@ def main() -> int:
         if args.show_magnet_markers
         else None
     )
+    assembly_force_visualizer = AssemblyForceArrowVisualizer(sim, args) if args.assembly_force_arrow else None
     mixer = flight.motor_mixer(args.yaw_drag_arm)
     logger = telemetry.CsvTelemetryLogger(args.log_csv, "multi_drone_position_ui", args.log_sample_period)
     group_commands: dict[tuple[int, ...], GroupCommand] = {}
@@ -1619,9 +1863,11 @@ def main() -> int:
     ui_period = max(args.ui_update_period, args.time_step)
     ui_event_period = max(args.ui_event_period, args.time_step)
     marker_period = max(args.marker_update_period, args.time_step)
+    force_arrow_period = max(args.assembly_force_arrow_update_period, args.time_step)
     target_visual_period = max(args.target_visual_update_period, args.time_step)
     last_ui_update = -1e9
     last_marker_update = -1e9
+    last_force_arrow_update = -1e9
     last_target_visual_update = -1e9
     last_ui_event_wall = 0.0
 
@@ -1641,6 +1887,8 @@ def main() -> int:
             if ui.reset_requested:
                 multi.clear_docking_memory(sim, docking_memory, clear_cooldowns=True, break_reason="manual reset")
                 clear_group_commands(sim, group_commands)
+                if assembly_force_visualizer is not None:
+                    assembly_force_visualizer.clear()
                 for item in controlled:
                     reset_controlled_drone(sim, item, omega)
                 ui.magnets_enabled.set(args.magnets_start_enabled)
@@ -1653,6 +1901,8 @@ def main() -> int:
             if ui.detach_and_hold_requested:
                 multi.clear_docking_memory(sim, docking_memory, clear_cooldowns=True, break_reason="manual detach")
                 clear_group_commands(sim, group_commands)
+                if assembly_force_visualizer is not None:
+                    assembly_force_visualizer.clear()
                 ui.magnets_enabled.set(False)
                 set_targets_to_current_all(sim, controlled, group_commands, args)
                 reset_controller_integrators(controlled, omega)
@@ -1665,6 +1915,8 @@ def main() -> int:
             if ui.release_latches_requested:
                 multi.clear_docking_memory(sim, docking_memory, clear_cooldowns=True, break_reason="manual release")
                 clear_group_commands(sim, group_commands)
+                if assembly_force_visualizer is not None:
+                    assembly_force_visualizer.clear()
                 set_targets_to_current_all(sim, controlled, group_commands, args)
                 reset_controller_integrators(controlled, omega)
                 ui.set_options(len(controlled), [], group_commands)
@@ -1815,6 +2067,9 @@ def main() -> int:
             sim_time = float(sim.getSimulationTime()) - sim_start
             real_time_factor = sim_time / max(time.perf_counter() - wall_start, 1e-6)
             docking_sample["real_time_factor"] = real_time_factor
+            if assembly_force_visualizer is not None and sim_time - last_force_arrow_update >= force_arrow_period:
+                assembly_force_visualizer.update(allocation_by_group if ui.docked_controller_enabled.get() else {})
+                last_force_arrow_update = sim_time
             if visualizer is not None and sim_time - last_marker_update >= marker_period:
                 world, latched_keys = latched_corner_visual_keys(
                     sim,
@@ -1879,6 +2134,8 @@ def main() -> int:
         logger.close()
         if visualizer is not None:
             visualizer.clear()
+        if assembly_force_visualizer is not None:
+            assembly_force_visualizer.clear()
         if ui.running:
             ui.close()
         if args.stop_on_exit:
