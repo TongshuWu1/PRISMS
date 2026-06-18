@@ -50,6 +50,16 @@ SCENE_PATH = PROJECT_ROOT / "scene" / "body_rate_controller_demo_scene.ttt"
 
 G = rate_control.G
 MOTORS = rate_control.MOTORS
+DEFAULT_MASS = rate_control.DEFAULT_MASS_KG
+DEFAULT_MAX_MOTOR_SPEED = rate_control.DEFAULT_MAX_MOTOR_SPEED
+DEFAULT_MAX_THRUST = rate_control.DEFAULT_MAX_THRUST_N
+DEFAULT_YAW_DRAG_ARM = rate_control.DEFAULT_YAW_DRAG_ARM_M
+DEFAULT_GEOMETRY_SCALE = rate_control.DEFAULT_GEOMETRY_SCALE
+DEFAULT_MODULE_INERTIA_BOX = rate_control.DEFAULT_MODULE_INERTIA_BOX_M
+DEFAULT_BODY_COLLISION_BOX = rate_control.DEFAULT_BODY_COLLISION_BOX_M
+DEFAULT_PROP_RADIUS = rate_control.DEFAULT_PROP_RADIUS_M
+DEFAULT_COLLISION_ROD_DIAMETER = rate_control.DEFAULT_COLLISION_ROD_DIAMETER_M
+DEFAULT_COLLISION_NODE_DIAMETER = rate_control.DEFAULT_COLLISION_NODE_DIAMETER_M
 PROPELLER_ARROW_MIN_LENGTH = 0.006
 PROPELLER_ARROW_MAX_LENGTH = 0.034
 PROPELLER_ARROW_RADIUS = 0.0008
@@ -91,10 +101,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reset-state", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--stop-on-exit", action=argparse.BooleanOptionalAction, default=True)
 
-    parser.add_argument("--mass", type=float, default=0.060, help="Total mass [kg].")
-    parser.add_argument("--max-motor-speed", type=float, default=2600.0, help="Motor speed limit [rad/s].")
-    parser.add_argument("--max-thrust", type=float, default=0.294, help="Per-motor thrust at max speed [N].")
-    parser.add_argument("--yaw-drag-arm", type=float, default=0.006, help="Yaw torque per motor thrust [m].")
+    parser.add_argument("--mass", type=float, default=DEFAULT_MASS, help="Total mass [kg].")
+    parser.add_argument("--max-motor-speed", type=float, default=DEFAULT_MAX_MOTOR_SPEED, help="Motor speed limit [rad/s].")
+    parser.add_argument("--max-thrust", type=float, default=DEFAULT_MAX_THRUST, help="Per-motor thrust at max speed [N].")
+    parser.add_argument("--yaw-drag-arm", type=float, default=DEFAULT_YAW_DRAG_ARM, help="Yaw torque per motor thrust [m].")
 
     parser.add_argument("--thrust", type=float, default=None, help="Collective thrust command [N]. Default is mass*g.")
     parser.add_argument("--p-cmd", type=float, default=0.0, help="Desired roll body rate p [rad/s].")

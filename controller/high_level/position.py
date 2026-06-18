@@ -62,10 +62,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-sphere", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--target-radius", type=float, default=0.035)
 
-    parser.add_argument("--mass", type=float, default=0.060)
-    parser.add_argument("--max-motor-speed", type=float, default=2600.0)
-    parser.add_argument("--max-thrust", type=float, default=0.294, help="Per-motor thrust limit [N].")
-    parser.add_argument("--yaw-drag-arm", type=float, default=0.006)
+    parser.add_argument("--mass", type=float, default=flight.DEFAULT_MASS)
+    parser.add_argument("--max-motor-speed", type=float, default=flight.DEFAULT_MAX_MOTOR_SPEED)
+    parser.add_argument("--max-thrust", type=float, default=flight.DEFAULT_MAX_THRUST, help="Per-motor thrust limit [N].")
+    parser.add_argument("--yaw-drag-arm", type=float, default=flight.DEFAULT_YAW_DRAG_ARM)
 
     parser.add_argument("--kp-xy", type=float, default=4.0)
     parser.add_argument("--kd-xy", type=float, default=2.8)

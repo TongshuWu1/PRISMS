@@ -34,6 +34,8 @@ HOVER_TARGET_PREFIX = "hover_target"
 MAGNET_VISUAL_PREFIX = "magnet_visual"
 ASSEMBLY_FORCE_ARROW_PREFIX = "assembly_force_arrow"
 ASSEMBLY_FORCE_ARROW_COLOR = (0.0, 0.85, 1.0)
+ASSEMBLY_COMMAND_ARROW_COLOR = (1.0, 0.62, 0.05)
+ASSEMBLY_RESIDUAL_ARROW_COLOR = (1.0, 0.10, 0.85)
 
 
 @dataclass
@@ -75,9 +77,14 @@ class AssemblyConfiguration:
 class GroupCommand:
     key: tuple[int, ...]
     target: list[float]
+    roll: float
+    pitch: float
     yaw: float
     command_target: list[float]
+    command_roll: float
+    command_pitch: float
     command_yaw: float
+    yaw_rate: float
     local_offsets: dict[int, list[float]]
     yaw_offsets: dict[int, float]
     state: assembly_geometric.AssemblyControllerState
@@ -109,9 +116,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stop-on-exit", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--target-radius", type=float, default=0.025)
     parser.add_argument("--ui-step", type=float, default=0.12, help="Continuous UI jog speed [m/s].")
-    parser.add_argument("--yaw-ui-step-deg", type=float, default=30.0, help="Continuous UI yaw jog speed [deg/s].")
+    parser.add_argument("--attitude-ui-step-deg", type=float, default=35.0, help="Continuous UI roll/pitch jog speed [deg/s].")
+    parser.add_argument("--yaw-ui-step-deg", type=float, default=18.0, help="Continuous UI yaw jog speed [deg/s].")
     parser.add_argument("--target-slew-speed", type=float, default=0.14, help="Max filtered controller target speed [m/s].")
-    parser.add_argument("--target-slew-yaw-deg", type=float, default=30.0, help="Max filtered controller yaw speed [deg/s].")
+    parser.add_argument("--target-slew-roll-pitch-deg", type=float, default=45.0, help="Max filtered assembly roll/pitch command speed [deg/s].")
+    parser.add_argument("--target-slew-yaw-deg", type=float, default=18.0, help="Max filtered controller yaw speed [deg/s].")
+    parser.add_argument("--assembly-target-slew-yaw-deg", type=float, default=10.0, help="Max filtered docked assembly yaw speed [deg/s].")
+    parser.add_argument("--assembly-target-yaw-accel-deg", type=float, default=35.0, help="Max docked assembly yaw command acceleration [deg/s^2].")
     parser.add_argument(
         "--quick-dock-spacing",
         type=float,
@@ -132,10 +143,10 @@ def parse_args() -> argparse.Namespace:
         help="Yaw convention for quick docking. Body +X is the drone front, marked by red propellers.",
     )
 
-    parser.add_argument("--mass", type=float, default=0.060)
-    parser.add_argument("--max-motor-speed", type=float, default=2600.0)
-    parser.add_argument("--max-thrust", type=float, default=0.294)
-    parser.add_argument("--yaw-drag-arm", type=float, default=0.006)
+    parser.add_argument("--mass", type=float, default=flight.DEFAULT_MASS)
+    parser.add_argument("--max-motor-speed", type=float, default=flight.DEFAULT_MAX_MOTOR_SPEED)
+    parser.add_argument("--max-thrust", type=float, default=flight.DEFAULT_MAX_THRUST)
+    parser.add_argument("--yaw-drag-arm", type=float, default=flight.DEFAULT_YAW_DRAG_ARM)
 
     parser.add_argument("--kp-xy", type=float, default=1.6)
     parser.add_argument("--kd-xy", type=float, default=1.7)
@@ -170,17 +181,17 @@ def parse_args() -> argparse.Namespace:
     flight.add_propeller_visual_args(parser)
 
     parser.add_argument("--magnets-start-enabled", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--capture-radius", type=float, default=0.012)
+    parser.add_argument("--capture-radius", type=float, default=0.012 * flight.DEFAULT_GEOMETRY_SCALE)
     parser.add_argument("--max-magnet-pairs-per-drone-pair", type=int, default=8)
     parser.add_argument("--face-docking", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--face-normal-tolerance-deg", type=float, default=20.0)
-    parser.add_argument("--face-center-tolerance", type=float, default=0.014)
+    parser.add_argument("--face-center-tolerance", type=float, default=0.014 * flight.DEFAULT_GEOMETRY_SCALE)
     parser.add_argument("--face-latch-required-fraction", type=float, default=1.0)
     parser.add_argument("--magnet-rest-distance", type=float, default=multi.DEFAULT_CONNECTOR_CONTACT_DISTANCE)
     parser.add_argument("--magnet-stiffness", type=float, default=1.0)
     parser.add_argument("--magnet-damping", type=float, default=0.02)
     parser.add_argument("--magnet-force-limit", type=float, default=0.008)
-    parser.add_argument("--latch-distance", type=float, default=0.005)
+    parser.add_argument("--latch-distance", type=float, default=0.005 * flight.DEFAULT_GEOMETRY_SCALE)
     parser.add_argument("--latch-speed", type=float, default=0.06)
     parser.add_argument("--latch-rest-distance", type=float, default=multi.DEFAULT_CONNECTOR_CONTACT_DISTANCE)
     parser.add_argument("--latch-stiffness", type=float, default=260.0)
@@ -188,7 +199,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--latch-force-limit", type=float, default=1.20)
     parser.add_argument("--latch-stiffness-ramp-time", type=float, default=0.20)
     parser.add_argument("--connector-break-force", type=float, default=7.00)
-    parser.add_argument("--latch-break-distance", type=float, default=0.020)
+    parser.add_argument("--latch-break-distance", type=float, default=0.020 * flight.DEFAULT_GEOMETRY_SCALE)
     parser.add_argument("--relatch-delay", type=float, default=0.60)
     parser.add_argument(
         "--show-latched-corners",
@@ -202,7 +213,7 @@ def parse_args() -> argparse.Namespace:
         "--magnet-marker-radius",
         dest="magnet_marker_radius",
         type=float,
-        default=0.008,
+        default=0.008 * flight.DEFAULT_GEOMETRY_SCALE,
     )
 
     parser.add_argument("--log-period", type=float, default=0.25)
@@ -219,20 +230,40 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--assembly-force-arrow-source",
-        choices=("achieved", "command", "residual"),
-        default="achieved",
-        help="Force vector to visualize: allocated achieved force, requested command force, or allocation residual.",
+        choices=(
+            "command-accel",
+            "achieved-accel",
+            "residual-accel",
+            "net-accel",
+            "net",
+            "net-command",
+            "achieved",
+            "command",
+            "residual",
+        ),
+        default="command-accel",
+        help=(
+            "Vector to visualize. Default command-accel shows the controller-requested "
+            "COM acceleration after removing gravity. Achieved and residual comparison "
+            "modes are also available."
+        ),
     )
     parser.add_argument(
         "--assembly-force-arrow-scale",
         type=float,
-        default=0.18,
-        help="Arrow length per Newton for the docked assembly force visualizer [m/N].",
+        default=0.08,
+        help="Arrow length per source unit. For acceleration sources, units are [m/(m/s^2)].",
     )
-    parser.add_argument("--assembly-force-arrow-min-length", type=float, default=0.030)
-    parser.add_argument("--assembly-force-arrow-max-length", type=float, default=0.350)
+    parser.add_argument("--assembly-force-arrow-min-length", type=float, default=0.050)
+    parser.add_argument("--assembly-force-arrow-max-length", type=float, default=0.400)
     parser.add_argument("--assembly-force-arrow-head-length", type=float, default=0.035)
     parser.add_argument("--assembly-force-arrow-radius", type=float, default=0.004)
+    parser.add_argument(
+        "--assembly-force-arrow-hide-threshold",
+        type=float,
+        default=0.030,
+        help="Hide the assembly force arrow below this source-vector magnitude.",
+    )
     parser.add_argument(
         "--assembly-force-arrow-update-period",
         type=float,
@@ -246,16 +277,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allocation-weight-torque-x", type=float, default=1.0)
     parser.add_argument("--allocation-weight-torque-y", type=float, default=1.0)
     parser.add_argument("--allocation-weight-torque-z", type=float, default=1.0)
-    parser.add_argument("--assembly-control-ramp-time", type=float, default=0.45)
-    parser.add_argument("--assembly-attitude-torque-gain-rp", type=float, default=0.018)
-    parser.add_argument("--assembly-attitude-torque-gain-yaw", type=float, default=0.004)
-    parser.add_argument("--assembly-rate-damping-rp", type=float, default=0.0070)
-    parser.add_argument("--assembly-rate-damping-yaw", type=float, default=0.0025)
-    parser.add_argument("--assembly-torque-limit-rp", type=float, default=0.020)
-    parser.add_argument("--assembly-torque-limit-yaw", type=float, default=0.007)
-    parser.add_argument("--module-inertia-length-x", type=float, default=0.176, help="Module inertia box x length [m].")
-    parser.add_argument("--module-inertia-length-y", type=float, default=0.176, help="Module inertia box y length [m].")
-    parser.add_argument("--module-inertia-length-z", type=float, default=0.166, help="Module inertia box z length [m].")
+    parser.add_argument("--assembly-control-ramp-time", type=float, default=0.25)
+    parser.add_argument("--assembly-max-horizontal-accel", type=float, default=2.8)
+    parser.add_argument("--assembly-max-vertical-accel", type=float, default=4.5)
+    parser.add_argument(
+        "--assembly-position-attitude-feedforward",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the legacy roll/pitch feedforward when --assembly-attitude-coupling feedforward is selected.",
+    )
+    parser.add_argument("--assembly-position-attitude-gain", type=float, default=1.0)
+    parser.add_argument("--assembly-position-attitude-limit-deg", type=float, default=16.0)
+    parser.add_argument(
+        "--assembly-attitude-coupling",
+        choices=("force-align", "feedforward", "off"),
+        default="force-align",
+        help="How docked translation demand changes desired attitude.",
+    )
+    parser.add_argument("--assembly-force-alignment-gain", type=float, default=1.0)
+    parser.add_argument("--assembly-force-alignment-limit-deg", type=float, default=28.0)
+    parser.add_argument(
+        "--assembly-world-yaw-attitude",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Decompose docked attitude error into world-Z yaw and world-horizontal tilt components.",
+    )
+    parser.add_argument("--assembly-yaw-error-limit-deg", type=float, default=8.0, help="Clamp docked world-yaw attitude error before torque control [deg].")
+    parser.add_argument("--assembly-attitude-torque-gain-rp", type=float, default=0.040)
+    parser.add_argument("--assembly-attitude-torque-gain-yaw", type=float, default=0.006)
+    parser.add_argument("--assembly-rate-damping-rp", type=float, default=0.0110)
+    parser.add_argument("--assembly-rate-damping-yaw", type=float, default=0.0060)
+    parser.add_argument("--assembly-torque-limit-rp", type=float, default=0.050)
+    parser.add_argument("--assembly-torque-limit-yaw", type=float, default=0.010)
+    parser.add_argument("--module-inertia-length-x", type=float, default=flight.DEFAULT_MODULE_INERTIA_BOX[0], help="Module inertia box x length [m].")
+    parser.add_argument("--module-inertia-length-y", type=float, default=flight.DEFAULT_MODULE_INERTIA_BOX[1], help="Module inertia box y length [m].")
+    parser.add_argument("--module-inertia-length-z", type=float, default=flight.DEFAULT_MODULE_INERTIA_BOX[2], help="Module inertia box z length [m].")
     parser.add_argument(
         "--assembly-inertia-aware-torque",
         action=argparse.BooleanOptionalAction,
@@ -383,17 +439,24 @@ class AssemblyForceArrowVisualizer:
     def __init__(self, sim, args: argparse.Namespace) -> None:
         self.sim = sim
         self.source = str(args.assembly_force_arrow_source)
+        if "command" in self.source:
+            self.color = ASSEMBLY_COMMAND_ARROW_COLOR
+        elif "residual" in self.source:
+            self.color = ASSEMBLY_RESIDUAL_ARROW_COLOR
+        else:
+            self.color = ASSEMBLY_FORCE_ARROW_COLOR
         self.length_scale = max(0.0, float(args.assembly_force_arrow_scale))
         self.radius = max(0.0002, float(args.assembly_force_arrow_radius))
         self.head_length = max(0.004, float(args.assembly_force_arrow_head_length))
         self.min_length = max(self.head_length + 0.001, float(args.assembly_force_arrow_min_length))
         self.max_length = max(self.min_length, float(args.assembly_force_arrow_max_length))
+        self.hide_threshold = max(0.0, float(args.assembly_force_arrow_hide_threshold))
         self.arrow_handles: dict[str, tuple[int, int]] = {}
         self.stem_lengths: dict[str, float] = {}
         self.active_keys: set[str] = set()
 
     def configure_shape(self, handle: int) -> None:
-        self.sim.setShapeColor(handle, None, self.sim.colorcomponent_ambient_diffuse, list(ASSEMBLY_FORCE_ARROW_COLOR))
+        self.sim.setShapeColor(handle, None, self.sim.colorcomponent_ambient_diffuse, list(self.color))
         self.sim.setShapeColor(handle, None, self.sim.colorcomponent_emission, [0.00, 0.08, 0.10])
         self.sim.setObjectInt32Param(handle, self.sim.shapeintparam_static, 1)
         self.sim.setObjectInt32Param(handle, self.sim.shapeintparam_respondable, 0)
@@ -440,6 +503,22 @@ class AssemblyForceArrowVisualizer:
         self.active_keys.clear()
 
     def force_vector(self, sample: dict[str, object]) -> list[float]:
+        mass = max(1e-9, float(sample["assembly_mass"]))
+        if self.source in ("command-accel", "achieved-accel", "net-accel", "residual-accel"):
+            if self.source == "residual-accel":
+                values = sample["wrench_residual"]
+                return [float(values[axis]) / mass for axis in range(3)]  # type: ignore[index]
+            field = "wrench_achieved" if self.source in ("achieved-accel", "net-accel") else "wrench_cmd"
+            values = sample[field]
+            force = [float(values[axis]) for axis in range(3)]  # type: ignore[index]
+            force[2] -= mass * flight.G
+            return [value / mass for value in force]
+        if self.source in ("net", "net-command"):
+            field = "wrench_achieved" if self.source == "net" else "wrench_cmd"
+            values = sample[field]
+            force = [float(values[axis]) for axis in range(3)]  # type: ignore[index]
+            force[2] -= mass * flight.G
+            return force
         field = self.FORCE_FIELDS[self.source]
         values = sample[field]
         return [float(values[axis]) for axis in range(3)]  # type: ignore[index]
@@ -454,7 +533,7 @@ class AssemblyForceArrowVisualizer:
             key = str(raw_key)
             force = self.force_vector(sample)  # type: ignore[arg-type]
             force_norm = vector_norm3(force)
-            if force_norm < 1e-9:
+            if force_norm < self.hide_threshold:
                 self.hide_key(key)
                 continue
 
@@ -754,6 +833,40 @@ def slew_angle(current: float, target: float, max_delta: float) -> float:
     return wrap_pi(current + math.copysign(max_delta, delta))
 
 
+def advance_angle_with_rate(
+    current: float,
+    target: float,
+    current_rate: float,
+    max_rate: float,
+    max_accel: float,
+    dt: float,
+) -> tuple[float, float]:
+    if dt <= 0.0:
+        return wrap_pi(current), current_rate
+    delta = wrap_pi(target - current)
+    if abs(delta) < 1e-8 and abs(current_rate) < 1e-8:
+        return wrap_pi(target), 0.0
+
+    limited_max_rate = max(0.0, float(max_rate))
+    limited_max_accel = max(0.0, float(max_accel))
+    desired_rate = position.clamp(delta / dt, -limited_max_rate, limited_max_rate)
+    if limited_max_accel > 0.0:
+        rate_step = position.clamp(
+            desired_rate - current_rate,
+            -limited_max_accel * dt,
+            limited_max_accel * dt,
+        )
+        new_rate = current_rate + rate_step
+    else:
+        new_rate = desired_rate
+    new_rate = position.clamp(new_rate, -limited_max_rate, limited_max_rate)
+
+    step = new_rate * dt
+    if delta * step > 0.0 and abs(step) >= abs(delta):
+        return wrap_pi(target), 0.0
+    return wrap_pi(current + step), new_rate
+
+
 def advance_controlled_target(item: ControlledDrone, args: argparse.Namespace, dt: float) -> None:
     current = [float(item.args.target_x), float(item.args.target_y), float(item.args.target_z)]
     filtered = slew_vector(current, item.command_target, max(0.0, float(args.target_slew_speed)) * dt)
@@ -769,10 +882,16 @@ def advance_controlled_target(item: ControlledDrone, args: argparse.Namespace, d
 
 def advance_group_target(command: GroupCommand, args: argparse.Namespace, dt: float) -> None:
     command.target = slew_vector(command.target, command.command_target, max(0.0, float(args.target_slew_speed)) * dt)
-    command.yaw = slew_angle(
+    roll_pitch_delta = math.radians(max(0.0, float(args.target_slew_roll_pitch_deg))) * dt
+    command.roll = slew_angle(command.roll, command.command_roll, roll_pitch_delta)
+    command.pitch = slew_angle(command.pitch, command.command_pitch, roll_pitch_delta)
+    command.yaw, command.yaw_rate = advance_angle_with_rate(
         command.yaw,
         command.command_yaw,
-        math.radians(max(0.0, float(args.target_slew_yaw_deg))) * dt,
+        command.yaw_rate,
+        math.radians(max(0.0, float(args.assembly_target_slew_yaw_deg))),
+        math.radians(max(0.0, float(args.assembly_target_yaw_accel_deg))),
+        dt,
     )
 
 
@@ -814,7 +933,7 @@ def sync_target_visuals(
         set_visible(sim, item.target_handle, not is_grouped)
     for command in group_commands.values():
         sim.setObjectPosition(command.target_handle, -1, command.command_target)
-        sim.setObjectOrientation(command.target_handle, -1, [0.0, 0.0, command.command_yaw])
+        sim.setObjectOrientation(command.target_handle, -1, [command.command_roll, command.command_pitch, command.command_yaw])
         set_visible(sim, command.target_handle, True)
 
 
@@ -981,9 +1100,14 @@ def command_from_current_group(
     return GroupCommand(
         key=key,
         target=target,
+        roll=0.0,
+        pitch=0.0,
         yaw=yaw,
         command_target=target[:],
+        command_roll=0.0,
+        command_pitch=0.0,
         command_yaw=yaw,
+        yaw_rate=0.0,
         local_offsets=local_offsets,
         yaw_offsets=yaw_offsets,
         state=state,
@@ -1015,9 +1139,14 @@ def update_group_command_to_current(
         configuration if configuration is not None else command.configuration,
     )
     command.target = refreshed.target
+    command.roll = refreshed.roll
+    command.pitch = refreshed.pitch
     command.yaw = refreshed.yaw
     command.command_target = refreshed.command_target
+    command.command_roll = refreshed.command_roll
+    command.command_pitch = refreshed.command_pitch
     command.command_yaw = refreshed.command_yaw
+    command.yaw_rate = refreshed.yaw_rate
     command.local_offsets = refreshed.local_offsets
     command.yaw_offsets = refreshed.yaw_offsets
     command.configuration = refreshed.configuration
@@ -1027,7 +1156,7 @@ def update_group_command_to_current(
         args.mass,
         module_inertia_box(args),
     )
-    assembly_geometric.reset_to_current(command.state, assembly_geom, command.yaw)
+    assembly_geometric.reset_to_current(command.state, assembly_geom, command.yaw, command.roll, command.pitch)
     apply_group_command(controlled, command, immediate=True)
 
 
@@ -1070,7 +1199,7 @@ def refresh_group_commands(
             args.mass,
             module_inertia_box(args),
         )
-        assembly_geometric.reset_to_current(command.state, assembly_geom, command.yaw)
+        assembly_geometric.reset_to_current(command.state, assembly_geom, command.yaw, command.roll, command.pitch)
         apply_group_command(controlled, command, immediate=True)
         reset_controller_integrators([controlled[index] for index in key], omega)
         group_commands[key] = command
@@ -1244,9 +1373,15 @@ class MultiDronePositionUI:
         self.x_var = tk.DoubleVar(value=0.0)
         self.y_var = tk.DoubleVar(value=0.0)
         self.z_var = tk.DoubleVar(value=0.0)
+        self.roll_deg_var = tk.DoubleVar(value=0.0)
+        self.pitch_deg_var = tk.DoubleVar(value=0.0)
         self.yaw_deg_var = tk.DoubleVar(value=0.0)
         self.linear_speed_var = tk.DoubleVar(value=args.ui_step)
+        self.attitude_speed_var = tk.DoubleVar(value=args.attitude_ui_step_deg)
         self.yaw_speed_var = tk.DoubleVar(value=args.yaw_ui_step_deg)
+        self.assembly_yaw_speed_var = tk.DoubleVar(value=args.assembly_target_slew_yaw_deg)
+        self.assembly_yaw_accel_var = tk.DoubleVar(value=args.assembly_target_yaw_accel_deg)
+        self.assembly_yaw_error_limit_var = tk.DoubleVar(value=args.assembly_yaw_error_limit_deg)
 
         self.reset_requested = False
         self.release_latches_requested = False
@@ -1259,8 +1394,8 @@ class MultiDronePositionUI:
         self.command_dirty = False
         self.quick_dock_status = "Quick dock: not commanded"
         self._selection_map: dict[str, Selection] = {}
-        self._motion_keys = {"x": 0, "y": 0, "z": 0, "yaw": 0}
-        self._motion_buttons = {"x": 0, "y": 0, "z": 0, "yaw": 0}
+        self._motion_keys = {"x": 0, "y": 0, "z": 0, "roll": 0, "pitch": 0, "yaw": 0}
+        self._motion_buttons = {"x": 0, "y": 0, "z": 0, "roll": 0, "pitch": 0, "yaw": 0}
         self._last_groups: list[tuple[int, ...]] = []
 
         self._build_layout()
@@ -1287,16 +1422,23 @@ class MultiDronePositionUI:
         target = ttk.LabelFrame(controls, text="Target")
         target.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         for row, (label, variable) in enumerate(
-            (("X [m]", self.x_var), ("Y [m]", self.y_var), ("Z [m]", self.z_var), ("Yaw [deg]", self.yaw_deg_var))
+            (
+                ("X [m]", self.x_var),
+                ("Y [m]", self.y_var),
+                ("Z [m]", self.z_var),
+                ("Roll [deg]", self.roll_deg_var),
+                ("Pitch [deg]", self.pitch_deg_var),
+                ("Yaw [deg]", self.yaw_deg_var),
+            )
         ):
             ttk.Label(target, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=3)
             entry = ttk.Entry(target, textvariable=variable, width=12)
             entry.grid(row=row, column=1, sticky="ew", padx=4, pady=3)
             entry.bind("<Return>", self._mark_command_dirty)
             entry.bind("<FocusOut>", self._mark_command_dirty)
-        ttk.Button(target, text="Apply", command=self._mark_command_dirty).grid(row=4, column=0, columnspan=2, sticky="ew", padx=4, pady=(6, 4))
+        ttk.Button(target, text="Apply", command=self._mark_command_dirty).grid(row=6, column=0, columnspan=2, sticky="ew", padx=4, pady=(6, 4))
         ttk.Button(target, text="Selection = Current", command=self.request_targets_to_current).grid(
-            row=5,
+            row=7,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -1304,7 +1446,7 @@ class MultiDronePositionUI:
             pady=3,
         )
         ttk.Button(target, text="All = Current", command=self.request_all_targets_to_current).grid(
-            row=6,
+            row=8,
             column=0,
             columnspan=2,
             sticky="ew",
@@ -1321,19 +1463,55 @@ class MultiDronePositionUI:
         self._jog_button(jog, "+Y", "y", 1, 1, 1)
         self._jog_button(jog, "-Z", "z", -1, 2, 0)
         self._jog_button(jog, "+Z", "z", 1, 2, 1)
-        self._jog_button(jog, "-Yaw", "yaw", -1, 3, 0)
-        self._jog_button(jog, "+Yaw", "yaw", 1, 3, 1)
-        ttk.Label(jog, text="Linear speed").grid(row=4, column=0, sticky="w", padx=4, pady=(8, 2))
+        self._jog_button(jog, "-Roll", "roll", -1, 3, 0)
+        self._jog_button(jog, "+Roll", "roll", 1, 3, 1)
+        self._jog_button(jog, "-Pitch", "pitch", -1, 4, 0)
+        self._jog_button(jog, "+Pitch", "pitch", 1, 4, 1)
+        self._jog_button(jog, "-Yaw", "yaw", -1, 5, 0)
+        self._jog_button(jog, "+Yaw", "yaw", 1, 5, 1)
+        ttk.Label(jog, text="Linear speed").grid(row=6, column=0, sticky="w", padx=4, pady=(8, 2))
         ttk.Scale(jog, variable=self.linear_speed_var, from_=0.05, to=1.50, orient=tk.HORIZONTAL).grid(
-            row=4,
+            row=6,
             column=1,
             sticky="ew",
             padx=4,
             pady=(8, 2),
         )
-        ttk.Label(jog, text="Yaw speed").grid(row=5, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(jog, text="Attitude speed").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        ttk.Scale(jog, variable=self.attitude_speed_var, from_=5.0, to=180.0, orient=tk.HORIZONTAL).grid(
+            row=7,
+            column=1,
+            sticky="ew",
+            padx=4,
+            pady=2,
+        )
+        ttk.Label(jog, text="Yaw speed").grid(row=8, column=0, sticky="w", padx=4, pady=2)
         ttk.Scale(jog, variable=self.yaw_speed_var, from_=10.0, to=220.0, orient=tk.HORIZONTAL).grid(
-            row=5,
+            row=8,
+            column=1,
+            sticky="ew",
+            padx=4,
+            pady=2,
+        )
+        ttk.Label(jog, text="Dock yaw speed").grid(row=9, column=0, sticky="w", padx=4, pady=(8, 2))
+        ttk.Scale(jog, variable=self.assembly_yaw_speed_var, from_=2.0, to=30.0, orient=tk.HORIZONTAL).grid(
+            row=9,
+            column=1,
+            sticky="ew",
+            padx=4,
+            pady=(8, 2),
+        )
+        ttk.Label(jog, text="Dock yaw accel").grid(row=10, column=0, sticky="w", padx=4, pady=2)
+        ttk.Scale(jog, variable=self.assembly_yaw_accel_var, from_=5.0, to=100.0, orient=tk.HORIZONTAL).grid(
+            row=10,
+            column=1,
+            sticky="ew",
+            padx=4,
+            pady=2,
+        )
+        ttk.Label(jog, text="Yaw error clamp").grid(row=11, column=0, sticky="w", padx=4, pady=2)
+        ttk.Scale(jog, variable=self.assembly_yaw_error_limit_var, from_=2.0, to=20.0, orient=tk.HORIZONTAL).grid(
+            row=11,
             column=1,
             sticky="ew",
             padx=4,
@@ -1406,6 +1584,14 @@ class MultiDronePositionUI:
             "<KeyRelease-Prior>": ("z", 0),
             "<KeyPress-Next>": ("z", -1),
             "<KeyRelease-Next>": ("z", 0),
+            "<KeyPress-a>": ("roll", -1),
+            "<KeyRelease-a>": ("roll", 0),
+            "<KeyPress-d>": ("roll", 1),
+            "<KeyRelease-d>": ("roll", 0),
+            "<KeyPress-w>": ("pitch", 1),
+            "<KeyRelease-w>": ("pitch", 0),
+            "<KeyPress-s>": ("pitch", -1),
+            "<KeyRelease-s>": ("pitch", 0),
             "<KeyPress-q>": ("yaw", 1),
             "<KeyRelease-q>": ("yaw", 0),
             "<KeyPress-e>": ("yaw", -1),
@@ -1487,6 +1673,7 @@ class MultiDronePositionUI:
 
     def advance_continuous_motion(self, dt: float) -> None:
         linear_delta = max(0.0, self.linear_speed_var.get()) * dt
+        attitude_delta = max(0.0, self.attitude_speed_var.get()) * dt
         yaw_delta = max(0.0, self.yaw_speed_var.get()) * dt
         moved = False
         for axis, variable in (("x", self.x_var), ("y", self.y_var), ("z", self.z_var)):
@@ -1494,12 +1681,22 @@ class MultiDronePositionUI:
             if direction:
                 variable.set(variable.get() + direction * linear_delta)
                 moved = True
+        for axis, variable in (("roll", self.roll_deg_var), ("pitch", self.pitch_deg_var)):
+            direction = self.motion_direction(axis)
+            if direction:
+                variable.set(variable.get() + direction * attitude_delta)
+                moved = True
         yaw_direction = self.motion_direction("yaw")
         if yaw_direction:
             self.yaw_deg_var.set(self.yaw_deg_var.get() + yaw_direction * yaw_delta)
             moved = True
         if moved:
             self.command_dirty = True
+
+    def sync_runtime_tuning(self, args: argparse.Namespace) -> None:
+        args.assembly_target_slew_yaw_deg = max(0.0, float(self.assembly_yaw_speed_var.get()))
+        args.assembly_target_yaw_accel_deg = max(0.0, float(self.assembly_yaw_accel_var.get()))
+        args.assembly_yaw_error_limit_deg = max(0.0, float(self.assembly_yaw_error_limit_var.get()))
 
     def load_selection_target(
         self,
@@ -1510,37 +1707,52 @@ class MultiDronePositionUI:
         if selection.kind == "drone" and selection.index is not None:
             item = controlled[selection.index]
             target = item.command_target
+            roll = 0.0
+            pitch = 0.0
             yaw = item.command_yaw
         elif selection.kind == "group" and selection.group in group_commands:
             command = group_commands[selection.group]
             target = command.command_target
+            roll = command.command_roll
+            pitch = command.command_pitch
             yaw = command.command_yaw
         else:
             targets = [item.command_target for item in controlled]
             target = average_positions(targets)
+            roll = 0.0
+            pitch = 0.0
             yaw = representative_command_yaw(controlled, group_commands)
 
         self.x_var.set(target[0])
         self.y_var.set(target[1])
         self.z_var.set(target[2])
+        self.roll_deg_var.set(math.degrees(roll))
+        self.pitch_deg_var.set(math.degrees(pitch))
         self.yaw_deg_var.set(math.degrees(yaw))
         self.command_dirty = False
 
-    def command_target(self) -> tuple[list[float], float]:
-        return [self.x_var.get(), self.y_var.get(), self.z_var.get()], math.radians(self.yaw_deg_var.get())
+    def command_target(self) -> tuple[list[float], float, float, float]:
+        return (
+            [self.x_var.get(), self.y_var.get(), self.z_var.get()],
+            math.radians(self.roll_deg_var.get()),
+            math.radians(self.pitch_deg_var.get()),
+            math.radians(self.yaw_deg_var.get()),
+        )
 
     def apply_current_command(
         self,
         controlled: list[ControlledDrone],
         group_commands: dict[tuple[int, ...], GroupCommand],
     ) -> None:
-        target, yaw = self.command_target()
+        target, roll, pitch, yaw = self.command_target()
         selection = self.selection()
         if selection.kind == "drone" and selection.index is not None:
             set_controlled_target(controlled[selection.index], target, yaw)
         elif selection.kind == "group" and selection.group in group_commands:
             command = group_commands[selection.group]
             command.command_target = target
+            command.command_roll = wrap_pi(roll)
+            command.command_pitch = wrap_pi(pitch)
             command.command_yaw = wrap_pi(yaw)
             apply_group_command(controlled, command)
         else:
@@ -1551,6 +1763,8 @@ class MultiDronePositionUI:
                 set_controlled_target(item, shifted, yaw)
             for command in group_commands.values():
                 command.command_target = [command.command_target[axis] + delta[axis] for axis in range(3)]
+                command.command_roll = wrap_pi(roll)
+                command.command_pitch = wrap_pi(pitch)
                 command.command_yaw = wrap_pi(yaw)
                 apply_group_command(controlled, command)
         self.command_dirty = False
@@ -1615,6 +1829,9 @@ class MultiDronePositionUI:
             f"rtf={float(docking_sample.get('real_time_factor', 0.0)):4.2f}  "
             f"docking={docking_sample.get('mode', 'unknown')}  "
             f"latched_pairs={docking_sample.get('latched_pairs', 0)}",
+            f"docked_yaw: speed={self.assembly_yaw_speed_var.get():.1f}deg/s  "
+            f"accel={self.assembly_yaw_accel_var.get():.1f}deg/s^2  "
+            f"error_clamp={self.assembly_yaw_error_limit_var.get():.1f}deg",
         ]
         if groups:
             lines.append("Docked groups:")
@@ -1629,6 +1846,12 @@ class MultiDronePositionUI:
                 allocation_residual = 0.0
                 allocation_weighted_residual = 0.0
                 allocation_saturated = 0
+                auto_roll = 0.0
+                auto_pitch = 0.0
+                force_alignment_angle = 0.0
+                force_alignment_limited = False
+                attitude_coupling_mode = "unknown"
+                attitude_error_frame = "unknown"
                 first_sample = high_samples[key[0]]
                 if first_sample is not None:
                     assembly_pos = first_sample.get("assembly_pos")
@@ -1640,12 +1863,20 @@ class MultiDronePositionUI:
                         first_sample.get("allocation_weighted_residual_norm", 0.0)
                     )
                     allocation_saturated = int(first_sample.get("allocation_saturated", 0))
+                    auto_roll = float(first_sample.get("auto_roll", 0.0))
+                    auto_pitch = float(first_sample.get("auto_pitch", 0.0))
+                    force_alignment_angle = float(first_sample.get("force_alignment_angle", 0.0))
+                    force_alignment_limited = bool(first_sample.get("force_alignment_limited", False))
+                    attitude_coupling_mode = str(first_sample.get("attitude_coupling_mode", "unknown"))
+                    attitude_error_frame = str(first_sample.get("attitude_error_frame", "unknown"))
                 lines.append(
                     f"  {self.group_label(group_index, key, command):18s} "
                     f"COM={format_vector(assembly_pos if assembly_pos is not None else command.target)} "
                     f"target={format_vector(command.target)} "
                     f"err={format_vector(assembly_error if assembly_error is not None else [0.0, 0.0, 0.0])} "
-                    f"yaw={math.degrees(command.yaw): .1f} deg"
+                    f"rpy=[{math.degrees(command.roll): .1f}, "
+                    f"{math.degrees(command.pitch): .1f}, {math.degrees(command.yaw): .1f}] deg "
+                    f"yaw_rate={math.degrees(command.yaw_rate): .1f}deg/s"
                 )
                 lines.append(
                     f"    config: {configuration_summary(command.configuration)} | "
@@ -1654,7 +1885,11 @@ class MultiDronePositionUI:
                 lines.append(
                     f"    assembly: gain={control_gain:.2f} alloc_rank={allocation_rank} "
                     f"residual={allocation_residual:.3f} weighted={allocation_weighted_residual:.3f} "
-                    f"saturated_motors={allocation_saturated}"
+                    f"saturated_motors={allocation_saturated} "
+                    f"coupling={attitude_coupling_mode}/{attitude_error_frame} "
+                    f"align={math.degrees(force_alignment_angle):.1f}deg "
+                    f"limited={int(force_alignment_limited)} "
+                    f"auto_rp=[{math.degrees(auto_roll): .1f}, {math.degrees(auto_pitch): .1f}] deg"
                 )
                 lines.append(f"    member heading: {heading_summary(controlled, key, command.yaw)}")
         else:
@@ -1722,7 +1957,20 @@ def docked_high_samples_for_ui(
                 "pos": pos,
                 "target": assembly_target,
                 "member_target": member_target,
+                "target_roll": assembly_sample.get("target_roll", 0.0),
+                "target_pitch": assembly_sample.get("target_pitch", 0.0),
                 "target_yaw": item.args.target_yaw,
+                "auto_roll": assembly_sample.get("auto_roll", 0.0),
+                "auto_pitch": assembly_sample.get("auto_pitch", 0.0),
+                "desired_roll": assembly_sample.get("desired_roll", 0.0),
+                "desired_pitch": assembly_sample.get("desired_pitch", 0.0),
+                "attitude_coupling_mode": assembly_sample.get("attitude_coupling_mode", "unknown"),
+                "attitude_error_frame": assembly_sample.get("attitude_error_frame", "unknown"),
+                "force_alignment_angle": assembly_sample.get("force_alignment_angle", 0.0),
+                "force_alignment_limited": assembly_sample.get("force_alignment_limited", False),
+                "att_error_world": assembly_sample.get("att_error_world", [0.0, 0.0, 0.0]),
+                "att_error_yaw_world": assembly_sample.get("att_error_yaw_world", [0.0, 0.0, 0.0]),
+                "att_error_tilt_world": assembly_sample.get("att_error_tilt_world", [0.0, 0.0, 0.0]),
                 "pos_error": assembly_pos_error,
                 "lin_vel": lin_vel,
                 "thrust_cmd": drone_thrust_cmd,
@@ -1750,6 +1998,8 @@ def docked_allocation_step(
     docked_state: assembly_geometric.AssemblyControllerState,
     args: argparse.Namespace,
     target_position: list[float],
+    target_roll: float,
+    target_pitch: float,
     target_yaw: float,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], dict[str, object]]:
     assembly_geom = allocation_geometry.build_assembly_geometry(
@@ -1765,6 +2015,8 @@ def docked_allocation_step(
         args,
         target_position,
         target_yaw,
+        target_roll=target_roll,
+        target_pitch=target_pitch,
     )
     allocation = wrench_allocator.allocate_wrench(
         assembly_geom,
@@ -1785,8 +2037,26 @@ def docked_allocation_step(
     allocation_sample = {
         "members": [item.drone.index for item in controlled],
         "assembly_pos": assembly_sample["pos"],
+        "assembly_mass": assembly_geom.mass,
         "assembly_target": assembly_sample["target"],
         "assembly_pos_error": assembly_sample["pos_error"],
+        "target_roll": assembly_sample["target_roll"],
+        "target_pitch": assembly_sample["target_pitch"],
+        "target_yaw": assembly_sample["target_yaw"],
+        "auto_roll": assembly_sample["auto_roll"],
+        "auto_pitch": assembly_sample["auto_pitch"],
+        "desired_roll": assembly_sample["desired_roll"],
+        "desired_pitch": assembly_sample["desired_pitch"],
+        "attitude_coupling_mode": assembly_sample["attitude_coupling_mode"],
+        "attitude_error_frame": assembly_sample["attitude_error_frame"],
+        "force_alignment_angle": assembly_sample["force_alignment_angle"],
+        "force_alignment_axis_world": assembly_sample["force_alignment_axis_world"],
+        "force_alignment_limited": assembly_sample["force_alignment_limited"],
+        "alignment_collective_axis_world": assembly_sample["alignment_collective_axis_world"],
+        "alignment_force_axis_world": assembly_sample["alignment_force_axis_world"],
+        "att_error_world": assembly_sample["att_error_world"],
+        "att_error_yaw_world": assembly_sample["att_error_yaw_world"],
+        "att_error_tilt_world": assembly_sample["att_error_tilt_world"],
         "allocation_rank": allocation.rank,
         "allocation_residual_norm": allocation.residual_norm,
         "allocation_weighted_residual_norm": allocation.weighted_residual_norm,
@@ -1880,6 +2150,7 @@ def main() -> int:
                 if not ui.running:
                     break
             ui.advance_continuous_motion(args.time_step)
+            ui.sync_runtime_tuning(args)
             if simulation_stopped_by_gui(sim):
                 print("CoppeliaSim simulation stopped; exiting Python UI controller.")
                 break
@@ -2020,6 +2291,8 @@ def main() -> int:
                         command.state,
                         args,
                         command.target,
+                        command.roll,
+                        command.pitch,
                         command.yaw,
                     )
                     allocation_by_group[f"group_{group_index}"] = allocation_sample

@@ -32,8 +32,10 @@ import generate_drone_plant_scene as plant  # noqa: E402
 
 
 MODEL_ALIAS = "truncated_octahedral_crazyflie"
-DEFAULT_CONNECTOR_CONTACT_DISTANCE = 0.004
-DEFAULT_LATCH_DISTANCE = 0.007
+DEFAULT_GEOMETRY_SCALE = flight.DEFAULT_GEOMETRY_SCALE
+DEFAULT_CONNECTOR_CONTACT_DISTANCE = 0.004 * DEFAULT_GEOMETRY_SCALE
+DEFAULT_LATCH_DISTANCE = 0.007 * DEFAULT_GEOMETRY_SCALE
+DEFAULT_FACE_PLANE_TOLERANCE = 0.002 * DEFAULT_GEOMETRY_SCALE
 
 Vector3 = tuple[float, float, float]
 LatchKey = tuple[int, int, int, int]
@@ -209,8 +211,8 @@ def blank_state(initial_speed: float = 0.0) -> flight.ControllerState:
     )
 
 
-def connector_locations(body_stl: Path) -> list[Vector3]:
-    vertices, _edges = plant.derive_cage_collision_graph(body_stl)
+def connector_locations(body_stl: Path, geometry_scale: float = DEFAULT_GEOMETRY_SCALE) -> list[Vector3]:
+    vertices, _edges = plant.derive_cage_collision_graph(body_stl, geometry_scale)
     return [(float(vertex[0]), float(vertex[1]), float(vertex[2])) for vertex in vertices]
 
 
@@ -241,8 +243,7 @@ def ordered_face_vertices(vertices: list[Vector3], connector_ids: tuple[int, ...
     )
 
 
-def derive_docking_faces(connectors: list[Vector3]) -> list[DockFace]:
-    plane_tolerance = 0.002
+def derive_docking_faces(connectors: list[Vector3], plane_tolerance: float = DEFAULT_FACE_PLANE_TOLERANCE) -> list[DockFace]:
     faces_by_connectors: dict[tuple[int, ...], DockFace] = {}
     for i, j, k in itertools.combinations(range(len(connectors)), 3):
         try:
@@ -292,9 +293,9 @@ def derive_docking_faces(connectors: list[Vector3]) -> list[DockFace]:
     ]
 
 
-def docking_geometry(body_stl: Path) -> DockingGeometry:
-    connectors = connector_locations(body_stl)
-    faces = derive_docking_faces(connectors)
+def docking_geometry(body_stl: Path, geometry_scale: float = DEFAULT_GEOMETRY_SCALE) -> DockingGeometry:
+    connectors = connector_locations(body_stl, geometry_scale)
+    faces = derive_docking_faces(connectors, 0.002 * max(1e-9, float(geometry_scale)))
     expected_counts = {4: 6, 6: 8}
     observed_counts: dict[int, int] = defaultdict(int)
     for face in faces:

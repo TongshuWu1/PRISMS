@@ -23,6 +23,8 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 LOCAL_COPPELIASIM_CLIENT = Path(
     r"C:\Program Files\CoppeliaRobotics\CoppeliaSimEdu"
     r"\programming\zmqRemoteApi\clients\python\src"
@@ -38,6 +40,8 @@ except ModuleNotFoundError as exc:
         "  python -m pip install -r requirements.txt"
     ) from exc
 
+from controller.low_level import rate_control  # noqa: E402
+
 
 MAIN_STL = PROJECT_ROOT / "assets" / "meshes" / "crazyflie_cage_body_no_propellers.stl"
 PROP_STL = PROJECT_ROOT / "assets" / "meshes" / "crazyflie_propellers_aligned.stl"
@@ -47,27 +51,24 @@ OUTPUT_SCENE = PROJECT_ROOT / "scene" / "body_rate_controller_demo_scene.ttt"
 MODEL_ALIAS = "truncated_octahedral_crazyflie"
 GENERATED_PREFIXES = (f"/{MODEL_ALIAS}", "/position_target")
 
-PROPELLERS = (
+PROPELLER_NAMES = (
+    "propeller_ccw_1",
+    "propeller_ccw_2",
+    "propeller_cw_1",
+    "propeller_cw_2",
+)
+PROPELLER_MESH_CENTERS = tuple(
+    {"name": name, "pos": position}
+    for name, position in zip(PROPELLER_NAMES, rate_control.LEGACY_PROPELLER_MESH_CENTERS_M)
+)
+PROPELLERS = tuple(
     {
-        "name": "propeller_ccw_1",
-        "pos": (0.029886, -0.031685, 0.012625),
-        "sign": 1.0,
-    },
-    {
-        "name": "propeller_ccw_2",
-        "pos": (-0.033400, 0.031601, 0.012625),
-        "sign": 1.0,
-    },
-    {
-        "name": "propeller_cw_1",
-        "pos": (0.029886, 0.031601, 0.012625),
-        "sign": -1.0,
-    },
-    {
-        "name": "propeller_cw_2",
-        "pos": (-0.033400, -0.031685, 0.012625),
-        "sign": -1.0,
-    },
+        "name": mesh_center["name"],
+        "mesh_center": mesh_center["pos"],
+        "pos": rate_control.MOTORS[index]["pos"],
+        "sign": rate_control.MOTORS[index]["spin"],
+    }
+    for index, mesh_center in enumerate(PROPELLER_MESH_CENTERS)
 )
 FORWARD_PROPELLER_COLOR = [0.95, 0.02, 0.01]
 REAR_PROPELLER_COLOR = [0.03, 0.03, 0.03]
@@ -79,9 +80,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=23000)
     parser.add_argument("--connect-timeout", type=int, default=20)
     parser.add_argument("--start-height", type=float, default=0.5)
-    parser.add_argument("--mass", type=float, default=0.060, help="Total mass [kg], Crazyflie plus cage.")
-    parser.add_argument("--collision-rod-diameter", type=float, default=0.003)
-    parser.add_argument("--collision-node-diameter", type=float, default=0.004)
+    parser.add_argument("--mass", type=float, default=rate_control.DEFAULT_MASS_KG, help="Total mass [kg], drone plus cage.")
+    parser.add_argument(
+        "--geometry-scale",
+        type=float,
+        default=rate_control.DEFAULT_GEOMETRY_SCALE,
+        help="Uniform scale applied to the STL-derived cage/body/connectors.",
+    )
+    parser.add_argument("--inertia-length-x", type=float, default=rate_control.DEFAULT_MODULE_INERTIA_BOX_M[0])
+    parser.add_argument("--inertia-length-y", type=float, default=rate_control.DEFAULT_MODULE_INERTIA_BOX_M[1])
+    parser.add_argument("--inertia-length-z", type=float, default=rate_control.DEFAULT_MODULE_INERTIA_BOX_M[2])
+    parser.add_argument(
+        "--propeller-visual-radius",
+        type=float,
+        default=rate_control.DEFAULT_PROP_RADIUS_M,
+        help="Visual propeller radius [m]. Use 0 to keep the STL propeller size.",
+    )
+    parser.add_argument("--collision-rod-diameter", type=float, default=rate_control.DEFAULT_COLLISION_ROD_DIAMETER_M)
+    parser.add_argument("--collision-node-diameter", type=float, default=rate_control.DEFAULT_COLLISION_NODE_DIAMETER_M)
     parser.add_argument("--show-collision", action="store_true")
     parser.add_argument("--main-stl", default=str(MAIN_STL))
     parser.add_argument("--propeller-stl", default=str(PROP_STL))
@@ -267,10 +283,22 @@ def triangles_to_mesh(triangles) -> tuple[list[float], list[int]]:
     return vertices, indices
 
 
-def make_mesh_shape(sim, parent: int, alias: str, triangles, color: list[float]) -> int | None:
+def scale_point(point: tuple[float, float, float], geometry_scale: float) -> tuple[float, float, float]:
+    scale = max(1e-9, float(geometry_scale))
+    return (point[0] * scale, point[1] * scale, point[2] * scale)
+
+
+def scale_triangles(triangles, geometry_scale: float):
+    scale = max(1e-9, float(geometry_scale))
+    if abs(scale - 1.0) < 1e-12:
+        return triangles
+    return tuple(tuple(scale_point(vertex, scale) for vertex in triangle) for triangle in triangles)
+
+
+def make_mesh_shape(sim, parent: int, alias: str, triangles, color: list[float], geometry_scale: float = 1.0) -> int | None:
     if not triangles:
         return None
-    vertices, indices = triangles_to_mesh(triangles)
+    vertices, indices = triangles_to_mesh(scale_triangles(triangles, geometry_scale))
     shape = sim.createShape(0, math.radians(20.0), vertices, indices)
     sim.setObjectAlias(shape, alias, 1)
     sim.setShapeColor(shape, None, sim.colorcomponent_ambient_diffuse, color)
@@ -282,7 +310,7 @@ def make_mesh_shape(sim, parent: int, alias: str, triangles, color: list[float])
 
 
 def split_propeller_stl(path: Path) -> dict[str, tuple[list[float], list[int]]]:
-    centers = {prop["name"]: tuple(prop["pos"]) for prop in PROPELLERS}
+    centers = {prop["name"]: tuple(prop["mesh_center"]) for prop in PROPELLERS}
     grouped = {prop["name"]: [] for prop in PROPELLERS}
     for triangle in read_stl_triangles(path):
         centroid = tuple(sum(vertex[i] for vertex in triangle) / 3.0 for i in range(3))
@@ -308,6 +336,24 @@ def split_propeller_stl(path: Path) -> dict[str, tuple[list[float], list[int]]]:
             raise ValueError(f"No propeller triangles assigned to {name}.")
         meshes[name] = (vertices, indices)
     return meshes
+
+
+def scale_xy_to_radius(vertices: list[float], radius: float) -> list[float]:
+    target_radius = max(0.0, float(radius))
+    if target_radius <= 0.0:
+        return vertices
+    current_radius = max(
+        math.hypot(vertices[index], vertices[index + 1])
+        for index in range(0, len(vertices), 3)
+    )
+    if current_radius <= 1e-12:
+        raise ValueError("Cannot scale a propeller mesh with zero xy radius.")
+    scale = target_radius / current_radius
+    scaled = vertices[:]
+    for index in range(0, len(scaled), 3):
+        scaled[index] *= scale
+        scaled[index + 1] *= scale
+    return scaled
 
 
 def vector_sub(a: tuple[float, float, float], b: tuple[float, float, float]) -> list[float]:
@@ -362,7 +408,10 @@ def cylinder_matrix_between(
     )
 
 
-def derive_cage_collision_graph(main_stl: Path) -> tuple[list[tuple[float, float, float]], list[tuple[int, int]]]:
+def derive_cage_collision_graph(
+    main_stl: Path,
+    geometry_scale: float = 1.0,
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int]]]:
     centers = []
     for component in connected_stl_components(main_stl):
         if classify_visual_component(component) == "joint" and int(component["triangle_count"]) >= 196:
@@ -399,18 +448,19 @@ def derive_cage_collision_graph(main_stl: Path) -> tuple[list[tuple[float, float
                 edges.append((i, j))
     if len(edges) != 36:
         raise ValueError(f"Expected 36 cage collision rods, found {len(edges)}.")
-    return vertices, edges
+    return [scale_point(vertex, geometry_scale) for vertex in vertices], edges
 
 
 def create_cage_collision_parts(
     sim,
     main_stl: Path,
     start_height: float,
+    geometry_scale: float,
     rod_diameter: float,
     node_diameter: float,
     show_collision: bool,
 ) -> list[int]:
-    vertices, edges = derive_cage_collision_graph(main_stl)
+    vertices, edges = derive_cage_collision_graph(main_stl, geometry_scale)
     parts = []
 
     for edge_index, (i, j) in enumerate(edges):
@@ -445,11 +495,14 @@ def create_dynamic_body(
     mass: float,
     start_height: float,
     main_stl: Path,
+    geometry_scale: float,
+    inertia_box: tuple[float, float, float],
     rod_diameter: float,
     node_diameter: float,
     show_collision: bool,
 ) -> int:
-    body = sim.createPrimitiveShape(sim.primitiveshape_cuboid, [0.09, 0.09, 0.026], 0)
+    body_box = [value * max(1e-9, float(geometry_scale)) for value in rate_control.LEGACY_BODY_COLLISION_BOX_M]
+    body = sim.createPrimitiveShape(sim.primitiveshape_cuboid, body_box, 0)
     sim.setObjectAlias(body, "drone_body_collision", 1)
     sim.setObjectPosition(body, -1, [0.0, 0.0, start_height])
     sim.setShapeColor(body, None, sim.colorcomponent_ambient_diffuse, [0.0, 0.35, 1.0])
@@ -458,6 +511,7 @@ def create_dynamic_body(
         sim,
         main_stl,
         start_height,
+        geometry_scale,
         rod_diameter,
         node_diameter,
         show_collision,
@@ -469,7 +523,7 @@ def create_dynamic_body(
     sim.setObjectInt32Param(body, sim.shapeintparam_static, 0)
     set_respondable(sim, body, True)
 
-    lx, ly, lz = 0.176, 0.176, 0.166
+    lx, ly, lz = (max(1e-6, float(value)) for value in inertia_box)
     ixx = mass * (ly * ly + lz * lz) / 12.0
     iyy = mass * (lx * lx + lz * lz) / 12.0
     izz = mass * (lx * lx + ly * ly) / 12.0
@@ -479,16 +533,16 @@ def create_dynamic_body(
     return body
 
 
-def attach_visual_model(sim, body: int, main_stl: Path) -> None:
+def attach_visual_model(sim, body: int, main_stl: Path, geometry_scale: float) -> None:
     categories = {"body": [], "cage": [], "joint": []}
     for component in connected_stl_components(main_stl):
         categories[classify_visual_component(component)].extend(component["triangles"])
-    make_mesh_shape(sim, body, "crazyflie_body_visual", categories["body"], [0.62, 0.68, 0.60])
-    make_mesh_shape(sim, body, "cage_rods_black_visual", categories["cage"], [0.005, 0.005, 0.005])
-    make_mesh_shape(sim, body, "cage_corner_joints_red_visual", categories["joint"], [0.95, 0.02, 0.01])
+    make_mesh_shape(sim, body, "crazyflie_body_visual", categories["body"], [0.62, 0.68, 0.60], geometry_scale)
+    make_mesh_shape(sim, body, "cage_rods_black_visual", categories["cage"], [0.005, 0.005, 0.005], geometry_scale)
+    make_mesh_shape(sim, body, "cage_corner_joints_red_visual", categories["joint"], [0.95, 0.02, 0.01], geometry_scale)
 
 
-def attach_propellers(sim, body: int, prop_stl: Path) -> None:
+def attach_propellers(sim, body: int, prop_stl: Path, propeller_visual_radius: float) -> None:
     meshes = split_propeller_stl(prop_stl)
     for index, prop in enumerate(PROPELLERS):
         root = sim.createDummy(0.0005)
@@ -506,6 +560,7 @@ def attach_propellers(sim, body: int, prop_stl: Path) -> None:
         hide_object(sim, joint)
 
         vertices, indices = meshes[prop["name"]]
+        vertices = scale_xy_to_radius(vertices, propeller_visual_radius)
         mesh = sim.createShape(0, math.radians(20.0), vertices, indices)
         sim.setObjectAlias(mesh, f"propeller_{index}_mesh", 1)
         sim.setObjectParent(mesh, joint, False)
@@ -516,10 +571,11 @@ def attach_propellers(sim, body: int, prop_stl: Path) -> None:
         set_respondable(sim, mesh, False)
 
 
-def attach_connector_frames(sim, body: int, main_stl: Path) -> None:
-    vertices, _edges = derive_cage_collision_graph(main_stl)
+def attach_connector_frames(sim, body: int, main_stl: Path, geometry_scale: float) -> None:
+    vertices, _edges = derive_cage_collision_graph(main_stl, geometry_scale)
+    dummy_size = 0.001 * max(1e-9, float(geometry_scale))
     for index, vertex in enumerate(vertices):
-        connector = sim.createDummy(0.001)
+        connector = sim.createDummy(dummy_size)
         sim.setObjectAlias(connector, f"magnet_connector_{index:02d}", 1)
         sim.setObjectParent(connector, body, False)
         sim.setObjectPosition(connector, body, list(vertex))
@@ -542,6 +598,7 @@ def main() -> int:
         raise FileNotFoundError(main_stl)
     if not prop_stl.exists():
         raise FileNotFoundError(prop_stl)
+    geometry_scale = max(1e-9, float(args.geometry_scale))
 
     sim = connect(args)
     stop_if_running(sim)
@@ -551,19 +608,22 @@ def main() -> int:
         args.mass,
         args.start_height,
         main_stl,
+        geometry_scale,
+        (args.inertia_length_x, args.inertia_length_y, args.inertia_length_z),
         args.collision_rod_diameter,
         args.collision_node_diameter,
         args.show_collision,
     )
-    attach_visual_model(sim, body, main_stl)
-    attach_propellers(sim, body, prop_stl)
-    attach_connector_frames(sim, body, main_stl)
+    attach_visual_model(sim, body, main_stl, geometry_scale)
+    attach_propellers(sim, body, prop_stl, args.propeller_visual_radius)
+    attach_connector_frames(sim, body, main_stl, geometry_scale)
     sim.setObjectSel([body])
     save_outputs(sim, body, Path(args.model), Path(args.scene))
 
     print("Saved clean externally controlled drone plant model and scene:")
     print(f"  model: {Path(args.model)}")
     print(f"  scene: {Path(args.scene)}")
+    print(f"Geometry scale: {geometry_scale:.4f}x STL coordinates.")
     print("Connector frames: 24 hidden magnet_connector_## dummies at the cage nodes.")
     print("Run scripts\\launchers\\run_position_ui_controller.py for single-drone position control.")
     return 0

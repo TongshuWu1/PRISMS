@@ -6,16 +6,21 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from controller.low_level import rate_control  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Analyze a drone telemetry CSV file.")
     parser.add_argument("csv_file", help="Telemetry CSV path.")
-    parser.add_argument("--max-motor-speed", type=float, default=2600.0, help="Motor speed limit [rad/s].")
+    parser.add_argument("--max-motor-speed", type=float, default=rate_control.DEFAULT_MAX_MOTOR_SPEED, help="Motor speed limit [rad/s].")
     parser.add_argument("--saturation-ratio", type=float, default=0.98, help="Fraction of max speed counted as saturated.")
     return parser.parse_args()
 

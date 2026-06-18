@@ -13,7 +13,7 @@ from typing import Any, Sequence
 from controller.low_level import body_rate as flight
 
 
-DEFAULT_MODULE_INERTIA_BOX = (0.176, 0.176, 0.166)
+DEFAULT_MODULE_INERTIA_BOX = flight.DEFAULT_MODULE_INERTIA_BOX
 
 
 @dataclass

@@ -58,10 +58,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-spheres", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--target-radius", type=float, default=0.025)
 
-    parser.add_argument("--mass", type=float, default=0.060)
-    parser.add_argument("--max-motor-speed", type=float, default=2600.0)
-    parser.add_argument("--max-thrust", type=float, default=0.294)
-    parser.add_argument("--yaw-drag-arm", type=float, default=0.006)
+    parser.add_argument("--mass", type=float, default=flight.DEFAULT_MASS)
+    parser.add_argument("--max-motor-speed", type=float, default=flight.DEFAULT_MAX_MOTOR_SPEED)
+    parser.add_argument("--max-thrust", type=float, default=flight.DEFAULT_MAX_THRUST)
+    parser.add_argument("--yaw-drag-arm", type=float, default=flight.DEFAULT_YAW_DRAG_ARM)
 
     parser.add_argument("--kp-xy", type=float, default=4.0)
     parser.add_argument("--kd-xy", type=float, default=2.8)
@@ -96,11 +96,11 @@ def parse_args() -> argparse.Namespace:
     flight.add_propeller_visual_args(parser)
 
     parser.add_argument("--magnets-start-enabled", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--capture-radius", type=float, default=0.025, help="Maximum distance for each compatible face-corner magnet pair [m].")
+    parser.add_argument("--capture-radius", type=float, default=0.025 * flight.DEFAULT_GEOMETRY_SCALE, help="Maximum distance for each compatible face-corner magnet pair [m].")
     parser.add_argument("--max-magnet-pairs-per-drone-pair", type=int, default=8)
     parser.add_argument("--face-docking", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--face-normal-tolerance-deg", type=float, default=20.0)
-    parser.add_argument("--face-center-tolerance", type=float, default=0.030)
+    parser.add_argument("--face-center-tolerance", type=float, default=0.030 * flight.DEFAULT_GEOMETRY_SCALE)
     parser.add_argument("--face-latch-required-fraction", type=float, default=1.0)
     parser.add_argument("--magnet-rest-distance", type=float, default=multi.DEFAULT_CONNECTOR_CONTACT_DISTANCE)
     parser.add_argument("--magnet-stiffness", type=float, default=1.0, help="Pre-latch connector spring gain [N/m].")
@@ -114,7 +114,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--latch-force-limit", type=float, default=1.50, help="Latched force saturation per connector [N].")
     parser.add_argument("--latch-stiffness-ramp-time", type=float, default=0.25, help="Time to ramp latch stiffness after acquisition [s].")
     parser.add_argument("--connector-break-force", type=float, default=8.00, help="Break if a latched connector exceeds this force [N].")
-    parser.add_argument("--latch-break-distance", type=float, default=0.040, help="Break if a latched connector stretches beyond this [m].")
+    parser.add_argument("--latch-break-distance", type=float, default=0.040 * flight.DEFAULT_GEOMETRY_SCALE, help="Break if a latched connector stretches beyond this [m].")
     parser.add_argument("--relatch-delay", type=float, default=0.60, help="Cooldown after latch break [s].")
 
     parser.add_argument("--log-period", type=float, default=0.25)

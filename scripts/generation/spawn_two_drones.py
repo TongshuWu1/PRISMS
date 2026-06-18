@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collision-node-diameter", type=float, default=None)
     parser.add_argument("--count", type=int, default=2, help="Number of drone models to spawn.")
     parser.add_argument("--height", type=float, default=0.50, help="Spawn height of drone centers [m].")
-    parser.add_argument("--spacing", type=float, default=0.22, help="Center-to-center spacing between drones [m].")
+    parser.add_argument("--spacing", type=float, default=0.22 * plant.rate_control.DEFAULT_GEOMETRY_SCALE, help="Center-to-center spacing between drones [m].")
     parser.add_argument(
         "--axis",
         choices=("x", "y", "xy", "x-neg-y"),

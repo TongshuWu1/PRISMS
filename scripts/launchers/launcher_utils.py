@@ -70,7 +70,7 @@ def add_two_drone_spawn_args(parser: argparse.ArgumentParser) -> None:
     add_connection_args(parser)
     parser.add_argument("--count", type=int, default=2, help="Number of drones to spawn.")
     parser.add_argument("--height", type=float, default=0.50)
-    parser.add_argument("--spacing", type=float, default=0.32, help="Initial center spacing [m].")
+    parser.add_argument("--spacing", type=float, default=0.35, help="Initial center spacing [m].")
     parser.add_argument("--axis", choices=("x", "y", "xy", "x-neg-y"), default="xy")
     parser.add_argument("--yaw-a-deg", type=float, default=0.0)
     parser.add_argument("--yaw-b-deg", type=float, default=180.0)

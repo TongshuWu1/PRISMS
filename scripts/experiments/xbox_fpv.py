@@ -53,10 +53,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reset-state", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--stop-on-exit", action=argparse.BooleanOptionalAction, default=True)
 
-    parser.add_argument("--mass", type=float, default=0.060)
-    parser.add_argument("--max-motor-speed", type=float, default=2600.0)
-    parser.add_argument("--max-thrust", type=float, default=0.294, help="Per-motor thrust limit [N].")
-    parser.add_argument("--yaw-drag-arm", type=float, default=0.006)
+    parser.add_argument("--mass", type=float, default=flight.DEFAULT_MASS)
+    parser.add_argument("--max-motor-speed", type=float, default=flight.DEFAULT_MAX_MOTOR_SPEED)
+    parser.add_argument("--max-thrust", type=float, default=flight.DEFAULT_MAX_THRUST, help="Per-motor thrust limit [N].")
+    parser.add_argument("--yaw-drag-arm", type=float, default=flight.DEFAULT_YAW_DRAG_ARM)
 
     parser.add_argument("--min-thrust-scale", type=float, default=0.0, help="Minimum thrust as a multiple of mass*g.")
     parser.add_argument("--hover-thrust-scale", type=float, default=1.0, help="Centered throttle thrust scale.")
