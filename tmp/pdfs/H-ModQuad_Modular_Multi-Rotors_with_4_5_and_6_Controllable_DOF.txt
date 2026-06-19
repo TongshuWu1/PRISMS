@@ -1,0 +1,815 @@
+
+
+===== PAGE 1 =====
+2021 IEEE International Conference on Robotics and Automation (ICRA 2021)
+May 31 - June 4, 2021, Xi'an, China
+H-ModQuad: Modular Multi-Rotors with 4, 5, and 6 Controllable DOF
+Jiawei Xu, Diego S. D’Antonio, and David Saldaña
+Abstract— Traditional aerial vehicles are usually custom-
+designed for specific tasks. Although they offer an efficient
+solution, they are not always able to adapt to changes in the
+task specification, e.g., increasing the payload. This applies
+to quadrotors, having a maximum payload and only four
+controllable degrees of freedom, limiting their adaptability to
+the task’s variations. We propose a versatile modular robotic
+system that can increase its payload and degrees of freedom
+by assembling heterogeneous modules; we call it H-ModQuad.
+It consists of cuboid modules propelled by quadrotors with
+tilted propellers that can generate forces in different directions.
+By connecting different types of modules, an H-ModQuad can
+increase its controllable degrees of freedom from 4 to 5 and 6.
+Fig. 1: Four heterogeneous modules forming an H-
+We model the general structure and propose three controllers,
+ModQuad structure. Each module has all its propellers
+one for each number of controllable degrees of freedom. We
+extend the concept of the actuation ellipsoid to find the best pointing in the same direction, but different modules can
+reference orientation that can maximize the performance of the have different propeller orientations. Video available at:
+structure. Our approach is validated with experiments using https://youtu.be/olKYuWPWxHo
+actual robots, showing the independence of the translation and
+orientation of a structure.
+I. INTRODUCTION
+control strategy for a hexarotor with tilting propellers; using
+During the last decade, unmanned aerial vehicles (UAV) 6 rotors, the UAV can control its 6 DOF, but the actuation
+have significantly impacted our society. They offer low-cost range is limited. Another solution is actively tilting the
+solutions for a large variety of applications in comparison propellers in a quadrotor. In [10] is proposed a control design
+with previous technology in aerial robots. However, one of for a quadrotor with controllable tilting propellers. In [11],
+the problems of aerial vehicles is their lack of versatility. the authors show a hybrid design where a hexarotor can
+For instance, in object-transportation, the robot hardware transit from under-actuated to fully-actuated by using an
+depends on the weight and dimensions of the object. On additional servomotor to tilt the rotors synchronously. Those
+the one hand, large vehicles can carry many types of objects designs achieve the full actuation, but the maximum force is
+in contrast to small vehicles that can only carry lightweight still limited. Although the work in [8] provides a universal
+payloads. On the other hand, large vehicles have a high ener- control strategy for both under-actuated and fully-actuated
+getic cost and motion limitations in cluttered environments. UAVs, the design of the UAV will be specific for a specific
+An important characteristic of aerial vehicles is the con- task, coming back to the versatility problem.
+trollable degrees of freedom (DOF). Linear controllers [1], Modular aerial systems offer a versatile and scalable way
+[2] focus on achieving stability around the nominal hover to increase their strength [7], [12], [13], [6], and capabil-
+state, defining the desired location and yaw orientation. In ities [14], [15], [16]. However, homogeneous modules can
+[3], [4], the authors present a geometric controller in 𝖲𝖮(𝟥) increase the total force, but not the controllability of the
+such that the quadrotor converges to the desired attitude that UAV. More modules only add more thrust redundancy to
+can differ from the nominal hover state, which allows the the system without increasing the number of controllable
+quadrotor to perform aggressive maneuvers. However, chang- DOF. We propose a modular aerial vehicle that can adapt to
+ing the internal controller, adding more vertical propellers to different tasks without changing the design of its modules or
+a UAV, [5], [6], or connecting multiple modular quadrotors altering the control policies. If the task is about transporting
+[7] without changing the quadrotor design, does not increase a pizza or a piano, the difference would be in the number of
+the number of controllable DOF. Since all propellers are modules that compose the aerial vehicle, which changes the
+vertical and pointing in the same direction, the resultant total total payload. Other tasks may require an accurate horizontal
+thrust is in one dimension, making it impossible to drive the force, such as drilling a hole on a wall. We can add modules
+UAV horizontally without tilting. A solution to this problem that are able to generate more forces on the horizontal plane
+is increasing the number of propellers and tilting them in to make the vehicle satisfy the requirements.
+different directions [8]. In [9] is introduced the design and The main contribution of this paper is threefold. First, we
+propose a modular multi-rotor that can change its strength
+J. Xu, D. D’Antonio, and D. Saldaña are with the Autonomous
+and controllable DOF from 4 to 5 and 6 based on the module
+and Intelligent Robotics Laboratory (AIRLab), Lehigh University, PA,
+USA:{jix519, diego.s.dantonio, saldana}@lehigh.edu configuration. Second, we extend the concept of the actuation
+978-1-7281-9077-8/21/$31.00 ©2021 IEEE 190
+6101659.1202.60584ARCI/9011.01
+:IOD
+|
+EEEI
+1202©
+00.13$/12/8-7709-1827-1-879
+|
+)ARCI(
+noitamotuA
+dna
+scitoboR
+no
+ecnerefnoC
+lanoitanretnI
+EEEI
+1202
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 2 =====
+ellipsoid to find the best reference orientation that can max-
+imize the performance of the structure. Third, we propose
+three controllers, one for each number of controllable degrees
+of freedom.
+II. PROBLEM STATEMENT
+Our work is focused on modular aerial robots composed of
+independent modules.
+Fig. 2: A module with its coordinate frames, and dimensions.
+Definition 1 (Module). A module is a UAV that can move Note that this module composes a structure, thus {𝑆} aligns
+by itself in a three-dimensional environment. It is composed with {𝑀 1 }. In Section IV, we will define 𝐹 -frame. In this
+of a quadrotor within a cuboid frame, a square base with example, the 𝐹 -frame of the structure aligns with {𝑃 11 }.
+dimensions 𝑙 × 𝑙, and a height ℎ. The propellers do not
+necessarily have to be vertical with respect to the base of the
+module, and their orientations define the actuation properties as the summation of all local forces and torques
+of the module. ∑
+𝐟 = 𝑆 𝐑 𝐟 . (1)
+𝑀 𝑖𝑗
+𝑖
+Each module has a mass 𝑚 and inertia tensor 𝐈 . A 𝑖𝑗
+𝑀
+∑
+module can dock to another by horizontally aligning the 𝝉 = 𝐩 × 𝑆 𝐑 𝐟 + 𝑆 𝐑 𝝉 , (2)
+𝑖𝑗 𝑀 𝑖𝑗 𝑀 𝑖𝑗
+vertical faces of both, creating a rigid connection. Performing 𝑖𝑗 𝑖 𝑖
+multiple docking actions, we assemble a larger structure.
+where 𝐩 ∈ ℝ3 is the position of each propeller in {𝑆}, and
+𝑖𝑗
+Definition 2 (Structure). A structure is a set of 𝑛 ≥ 1 𝑆 𝐑 is the orientation of the 𝑖-th module in {𝑆}.
+𝑀
+𝑖
+rigidly connected modules that behave as a single multi- We use Newton-Euler’s equation to describe the dynamics
+rotor vehicle. These modules are horizontally connected by of the structure
+docking along the sides, so the resulting shape has the same
+height ℎ. Its inertia tensor is denoted by 𝐈 𝑆 . 𝑛𝑚 𝐫̈ − 𝑛𝑚 𝑔𝐞̂ 3 = 𝑊 𝐑 𝑆 𝐟, (3)
+𝐈 𝝎̇ + 𝝎 × 𝐈 𝝎 = 𝝉, (4)
+We denote the standard basis in ℝ3 by 𝐞̂ = [1, 0, 0]⊤, 𝐞̂ = 𝑆 𝑆
+1 2
+[0, 1, 0]⊤, and 𝐞̂ = [0, 0, 1]⊤. The world coordinate frame, where 𝐫̈ is the linear acceleration of the structure, 𝝎, 𝝎̇
+3
+{𝑊 }, is fixed, and its 𝑧-axis points upwards. The 𝑖-th module are the angular velocity and acceleration of the structure,
+in the structure has a module reference frame, {𝑀 }, with its respectively, and 𝑔 is the gravity constant. Letting 𝐮 =
+𝑖
+origin in the module’s center of mass. The four propellers are [𝑓 , 𝑓 , ..., 𝑓 ]⊤ be the input vector, we can rewrite (1)
+11 12 𝑛4
+in a square configuration and located on the 𝑥𝑦-plane. Each and (2) in a compact form
+propeller has a propeller frame. The 𝑥-axis points towards the
+front of the module, and the 𝑦-axis to its left. In a traditional
+[
+𝐟⊤ 𝝉⊤
+]⊤
+= 𝐀𝐮, where (5)
+quadrotor, the propellers are oriented vertically, parallel to [ 𝑆 𝐑 𝐞̂ ⋯ ]
+the 𝑧-axis of the quadrotor. In our case, the propellers can 𝐀 = 𝐩 × 𝑆 𝐑 𝐞̂ + 𝑆 𝑀 𝐑 1 3 (−1)1+1 𝑘 𝑚 𝐞̂ ⋯ (6)
+be pointing in different directions. The orientation of the 11 𝑀 1 3 𝑀 1 𝑘 𝑓 3
+𝑗-th propeller frame, {𝑃 }, in the module frame, {𝑀 },
+𝑖𝑗 𝑖 is the design matrix of 6 × 4𝑛 that maps the input forces
+is specified by the rotation matrix 𝑀 𝑖𝐑
+𝑗
+∈ 𝖲𝖮(3). The
+into the total force and torque of the structure. In traditional
+associated coordinate frames of a module are illustrated in
+multi-rotor vehicles, this matrix is fixed after building the
+Fig. 2. The structure frame, denoted by {𝑆}, has its origin
+robot. In our case, this matrix can change depending on the
+in its center of mass, and its 𝑥-, 𝑦- and 𝑧-axes are parallel
+module configuration.
+to the 𝑥-, 𝑦- and 𝑧-axes of the first module respectively.
+Combining (3), (4), and (5), we obtain the mapping from
+The location and the orientation of {𝑆} in the world frame
+input vector 𝐮 to the linear and angular acceleration of the
+{𝑊 } is specified by the vector 𝐫 ∈ ℝ3 and the rotation
+structure in the world reference frame,
+matrix 𝑊 𝐑 ∈ 𝖲𝖮(3). The angular velocity of each propeller
+𝑆 [ ]
+a { 𝑗 n 𝑀 ∈ d { a } 1 , t , o a . r s .. q , a u 4 e } fu b i n n y c a t t i h o m e n o a o d ir f u d l t e h ra e 𝑖 g g t . h e T n ru h e s e r t a f t 𝑓 o es rc , a e a t a h re n ru d s t t o 𝑓 rq 𝑖𝑗 u ∈ e v [ e 0 c , t 𝑓 o 𝑚 rs 𝑎𝑥 i ] n , [ 𝝎 𝐫̈ ̇ ] = 𝑛 1 𝑚 𝑊 𝟎 𝐑 𝑆 𝐈− 𝑆 𝟎 1 𝐀𝐮 − [ 𝐈− 𝑆 1(𝝎 𝑔𝐞 × ̂ 3 𝐈 𝑆 𝝎) ] . (7)
+𝑖 𝑖𝑗
+Note that the number of controllable DOF depends on the
+𝐟 = 𝑓 𝑀 𝑖𝐑 𝐞̂ , and 𝝉 = 𝑓 (−1)𝑗+1 𝑘 𝑚 𝑀 𝑖𝐑 𝐞̂ , rank of 𝐀. For a quadrotor, the number of controllable DOF
+𝑖𝑗 𝑖𝑗 𝑗 3 𝑖𝑗 𝑖𝑗 𝑘 𝑗 3 is four [3]. A hexarotor with tilted propellers can have six
+𝑓
+controllable DOF, defining a fully actuated robot [8]. We
+where 𝑘 and 𝑘 are coefficients that can be obtained want to design modules with tilted propellers such that they
+𝑓 𝑚
+experimentally. The structure generates a total force 𝐟 and fly by themselves, and when combined, they can have 4, 5,
+torque 𝝉 in the structure frame {𝑆} which can be expressed or 6 controllable DOF. We design a controller for each case
+191
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 3 =====
+and make sure the control strategies are general such that the same direction with respect to {𝑀 }, specified by rotation
+𝑖
+they work for any number of modules in a structure. The matrix 𝑀 𝑖𝐑
+𝑗
+.
+problems are stated as follows.
+In this paper, we focus on the 𝑅-module, showing that
+Problem 1 (Module Design). Given the desired direction of it is balanced, however, there are other types of balanced
+maximum thrust of a module, specified by the rotation matrix modules that we leave for future studies.
+𝐑⋆, find the tilting directions of its propellers, 𝑀 𝑖𝐑
+𝑗
+, such
+Proposition 1. If a module is an R-Module, defined by the
+that when all propellers are generating an identical thrust,
+matrix 𝐑⋆, the module is a balanced module.
+the total thrust is parallel to the vector 𝐑⋆𝐞̂ and the total
+3
+moment is zero. Proof. By definition, 𝑀 𝑖𝐑
+𝑗
+= 𝐑⋆. In a quadrotor with
+a square configuration, the position of the propellers are
+Problem 2 (Controlling H-ModQuad). Given a structure
+𝐩 = −𝐩 and 𝐩 = −𝐩 , then, the torques are cancelled,
+with either 4, 5 or 6 controllable degrees of freedom, derive 1 3 1 3
+satisfying (9). Constraints (10) and (11) are satisfied by
+a controller that optimizes the use of its maximum force.
+replacing 𝑀 𝑖𝐑
+𝑗
+= 𝐑⋆. In (11), 𝜆 = 4 for any 𝑅-Module
+Problem 1 is discussed in Section III and Problem 2 is with a non-identity 𝐑⋆.
+explored in Section IV.
+A set of 𝑅-modules with different rotor orientations is
+III. MODULE DESIGN called a heterogeneous team. When the heterogeneous team
+In order to develop a module that can fly and dock to other forms a single rigid structure, it forms an H-Modquad
+modules, we need the module to be balanced, meaning that structure, or simply a heterogeneous structure. In the rest of
+the module can hover without rotating while all propellers this paper, the terms structure and heterogeneous structure
+are generating identical forces. In this section, we describe are used interchangeably. By choosing different types of bal-
+the factors to design a balanced module. anced modules to assemble the structure, one can configure
+The matrix 𝐀 is a 6 × 4 matrix for a single module. and optimize the actuation properties of the structure to
+The orientation of each propeller, 𝑀 𝑖𝐑
+𝑗
+, can be written as a satisfy requirements of different tasks.
+function of two angles 𝛼 , 𝛽 ∈ [−𝜋∕2, 𝜋∕2],
+𝑗 𝑗
+IV. CONTROL
+𝑀 𝑖𝐑 = Rot(𝑦, 𝛽 ) Rot(𝑥, 𝛼 ), (8)
+𝑗 𝑗 𝑗 We separate the trajectory tracking control into two parts:
+where the function Rot returns the rotation matrix of rotating position and attitude. Fig. 3 shows an overview of the control
+the given angle along the specified axis. strategy in a centralized way where all modules in the
+In this formulation, Problem 1 is reduced to finding a structure are controlled based on a trajectory function and
+combination of 𝛼 , 𝛽 for the four propellers and an unknown a single stream of measurements.
+𝑗 𝑗
+scalar value 𝜆 > 0, such that when all the propellers generate Given a desired position, velocity, and acceleration, 𝐫𝑑,
+a unit force, i.e., 𝐮 = 𝟏, the force and torque of the module 𝐫̇ 𝑑 and 𝐫̈ 𝑑. The position control determines the desired ac-
+are celeration vector 𝐚 by applying a PD controller on position
+𝐫
+𝝉 = 𝟎 and 𝐟⋆ = 𝜆𝐟̂⋆, error, 𝐞 = 𝐫𝑑 − 𝐫, and velocity error, 𝐞 = 𝐫̇ 𝑑 − 𝐫̇ , with a
+𝐫 𝐯
+feed-forward term,
+where 𝐟̂⋆ = 𝐑⋆𝐞̂ is a unit vector that determines where the
+3
+thrust points at and 𝜆 is the magnitude of the thrust force. 𝐚 = 𝐊 𝐞 + 𝐊 𝐞 + 𝑔𝐞̂ + 𝐫̈ 𝑑, (12)
+𝐫 𝐫 𝐫 𝐯 𝐯 3
+The vector 𝐟̂⋆ is defined during the module design.
+where 𝐊 and 𝐊 are diagonal matrices with positive gains.
+Based on (2), the torque of the module is generated by the 𝐫 𝐯
+In fully-actuated vehicles, the position and the attitude
+force and drag of the propeller, i.e., 𝝉 = 𝝉 +𝝉 . Considering
+𝑓 𝑑
+control are independent. However, in under-actuated vehicles,
+the fact that typically the torque created by the force is much
+e.g., a quadrotor, we need the attitude control to re-orient
+larger than that by the drag, i.e., 𝑘 >> 𝑘 , a solution for
+𝑓 𝑚
+the vehicle to produce a linear acceleration that converges
+𝝉 = 𝟎 can be obtained by solving 𝝉 = 𝟎 and 𝝉 = 𝟎
+𝑓 𝑑
+to 𝐚 . Therefore, we need to take into account the controllable
+independently. Therefore, from (1) and (2), we obtain 𝐫
+degrees of freedom to define the control strategies in 𝖲𝖤(𝟥).
+∑4 𝑗 𝐩 𝑗 × 𝑀 𝑖𝐑 𝑗 𝐞̂ 3 = 𝟎, (9) The controllable DOF depends on the matrix that maps rotor
+∑4
+𝑗
+𝑀 𝑖𝐑
+𝑗
+(−1)𝑗𝐞̂
+3
+= 𝟎, (10)
+m
+fo
+a
+rc
+k
+e
+e
+s
+s
+i
+t
+n
+h
+t
+e
+o t
+m
+he
+ap
+v
+.
+e
+N
+hi
+o
+c
+t
+l
+e
+e’s
+in
+fo
+(
+r
+6
+c
+)
+e
+t
+a
+h
+n
+a
+d
+t 𝐀
+tor
+c
+q
+a
+u
+n
+e.
+b
+T
+e
+h
+d
+e
+i
+m
+vi
+a
+d
+t
+e
+r
+d
+ix
+i
+𝐀
+nto
+in
+tw
+(5
+o
+)
+∑4
+𝑗
+𝑀 𝑖𝐑
+𝑗
+𝐞̂
+3
+= 𝜆𝐑⋆𝐞̂
+3
+. (11) parts, 𝐀
+𝐟
+and 𝐀
+𝝉
+which are the first and last three rows of
+𝐀, respectively. Since a structure is composed of at least one
+Therefore, every module that satisfies the constraints (9)-
+module and the propellers of one module always generate
+(11) is balanced. One solution that satisfies these constraints
+linearly independent torques, the 𝐀 portion of 𝐀 in (5) is
+is making 𝑀 𝑖𝐑
+𝑗
+= 𝐑⋆ for all 𝑗 = 1, ..., 4. This leads us to
+full-row-rank, i.e., rank(𝐀 )=3. Do
+𝜏
+cking more modules to
+define a specific type of module that creates a sub-group of 𝜏
+the structure will add redundancy to the controllability of 𝝉.
+balanced modules.
+Hence, the rank of 𝐀 depends on 𝐀 . The maximum total
+𝐟
+Definition 3 (𝑅-Module). An 𝑅-module is a module that is thrust that the structure can generate is not only related to the
+propelled by a quadrotor, and all its rotors are pointing in number of modules but also the orientation of its propellers.
+192
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 4 =====
+Fig. 3: Control Diagram: The desired pose of {𝐹 }, 𝐫𝑑(𝑡), 𝑊 𝐑𝑑 (𝑡) is tracked using the feedback on the pose of {𝑆},
+𝐹
+𝑊 𝐑 (𝑡), 𝐫(𝑡). The Motor Dynamics block is characterized by the matrices 𝐀†, 𝐀†, and 𝐀† depending on the number of
+𝑆 4 5
+controllable DOF. The rotation from {𝑆} to 𝐹 -frame is specified by 𝑆 𝐑 , which is fixed in {𝑆}.
+𝐹
+In order to maximize the thrust efficiency in the control rank(𝐀 )>1, the singular vector associated with the second
+𝐟
+policies, we introduce the concept of 𝐹 -frame. largest singular value is chosen as the 𝑥-axis of {𝐹 }. The
+𝑦-axis of {𝐹 } is obtained by 𝐲̂ = 𝐳̂ × 𝐱̂ . Then 𝑆 𝐑 =
+Definition 4 (𝐹 -frame). The 𝐹 -frame of a structure, {𝐹 }, is 𝐹 𝐹 𝐹 𝐹
+[𝐱̂ 𝐲̂ 𝐳̂ ].
+a coordinate frame with origin is at the center of mass; the 𝑧- 𝐹 𝐹 𝐹
+We compute the attitude error in 𝖲𝖮(𝟥) with respect to the
+axis, 𝐳̂ , points towards the direction where the structure can
+𝐹 𝐹 -frame. Since the structure has attitude 𝑊 𝐑 and angular
+generate its maximum thrust; the 𝑥-axis, 𝐱̂ , points towards 𝐹
+𝐹 velocity 𝝎, the angular tracking error is
+the direction where the structure can generate its maximum
+thrust on the normal plane of 𝐳̂ 𝐹 . 𝐞 = 1 ( (𝑊 𝐑𝑑 )⊤ 𝑊 𝐑 𝑆 𝐑 − (𝑊 𝐑 𝑆 𝐑 )⊤ 𝑆 𝐑𝑑 )∨ ,
+In [17], Yoshikawa introduced the concept of the ma- 𝐑 2 𝐹 𝑆 𝐹 𝑆 𝐹 𝐹
+nipulability ellipsoid for robot-arm manipulation by char- 𝐞 = 𝝎 − (𝑊 𝐑 𝑆 𝐑 )⊤ 𝑊 𝐑𝑑 𝝎𝑑,
+𝝎 𝑆 𝐹 𝐹
+acterizing the response of a manipulator arm based on its
+Jacobian. We extend this concept for multi-rotor systems, where the “vee” operator, ∨, maps a skew symmetric matrix
+characterizing the output force in response to the motor to ℝ3. Note that by design, the output of the orientation
+inputs. Although we focus on forces to compensate the grav- sensors are with respect to the structure frame, 𝑊 𝐑 . In
+𝑆
+ity, the same approach can be applied to map motor inputs order to maximize the actuation efficiency of the structure,
+to torques. We determine the 𝐹 -frame by using singular our controllers track the attitude of {𝐹 } to the desired
+value decomposition on 𝐀 𝐟 . For a given 𝐀 𝐟 , we calculate attitude 𝑊 𝐑𝑑 , which makes the attitude of {𝑆} to converge
+𝐹
+the singular values and singular vectors of the rectangular to 𝑊 𝐑𝑑 𝑆 𝐑⊤ . Then, the necessary acceleration to track the
+matrix 𝐀 . Since the singular vectors are orthogonal, we use 𝐹 𝐹
+𝐟 attitude error is
+them to define the major and minor axes of the ellipsoid,
+transformed by 𝐀 from a unit disc. We choose the singular
+𝐟 𝐚 = −𝐊 𝐞 − 𝐊 𝐞 , (13)
+vector associated with the largest singular value as the 𝑧- 𝐑 𝐑 𝐑 𝝎 𝝎
+axis of {𝐹 }. In Fig. 4, we illustrate the ellipsoid for three
+where 𝐊 and 𝐊 are diagonal matrices with positive gains.
+different 2 × 1 structures projected on each 𝑥𝑧-plane. 𝐑 𝝎
+We can generate a torque to track that acceleration
+In the case of rank(𝐀 ) = 1, all the force vectors from the
+𝐟
+rotors are linearly dependent in the same axis. We define the
+𝝉 = 𝐈 𝐚 + 𝝎 × 𝐈 𝝎.
+orientation of the axes of {𝐹 } by rotating {𝑆} using same 𝑆 𝐑 𝑆
+rotation matrix of the rotors in a module. In the case of
+We recall that different from [4], our attitude error is not
+with respect to the structure frame, {𝑆}; we want to align
+{𝐹 } with the desired attitude. Based on the concept of the
+𝐹 -frame, we proceed to define the control of the structure
+depending on the number of controllable DOF.
+A. Rank(𝐀) = 4
+For a structure with rank(𝐀 ) = 1, similar to a traditional
+𝐟
+Fig. 4: Side view of three H-ModQuad structures: each
+quadrotor, we can control the position and yaw angle of the
+structure consists of two different modules. The black arrows
+structure using a geometric controller [3]. However, different
+represent the direction of rotor forces of the propellers. The
+from [3], we project the desired thrust vector on the 𝑧-axis
+purple ellipses represent the projection of the 𝐹 -frame on
+of {𝐹 }, instead of {𝑆}. This approach reduces the energy
+the 𝑥𝑧-plane of each structure. The first two structures have
+consumption since the reference force is in the direction
+their 𝐹 -frame aligned with {𝑆} while the last one has its
+of the maximum force of the structure. Given a desired
+𝐹 -frame deviating from {𝑆}. acceleration vector 𝐚 and a desired yaw angle 𝜓𝑑, the desired
+193
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 5 =====
+attitude 𝑊 𝐑𝑑 = [𝐱̂𝑑 𝐲̂𝑑 𝐳̂𝑑] of the structure is obtained by 0.0
+𝐹
+𝐚 0.5
+𝐳̂𝑑 = 𝐫 , 𝐱̂𝑐 = [cos(𝜓𝑑), sin(𝜓𝑑), 0]⊤ −
+𝐚
+‖ 𝐫‖
+𝐳̂𝑑 × 𝐱̂𝑐 𝐲̂𝑑 = , 𝐱̂𝑑 = 𝐲̂𝑑 × 𝐳̂𝑑. (14)
+‖ 𝐳̂𝑑 × 𝐱̂𝑐 ‖
+The thrust, 𝑓 , is defined by the projection of 𝑛𝑚 𝐚 on 𝐳̂ ,
+𝐫 𝐹
+𝑓 = 𝑛𝑚 𝐚 ⋅ 𝑊 𝐑 𝑆 𝐑 𝐞̂ . (15) 𝐫 𝑆 𝐹 3
+We can rewrite the motor dynamics, from (5), to use the
+[ 𝑓 ] [ 𝐯⊤ ]
+four controllable DOF, = 𝐀 𝐮, where 𝐀 = 4𝑓 , and
+𝝉 4 4 𝐀
+𝝉
+the vector 𝐯 ∈ {−1, 1}4𝑛 is associated to the direction of
+4𝑓
+each propeller, either 1 or −1 if propeller is pointing in the
+same or in the opposite direction of 𝐳̂ , respectively. Since
+𝐹
+the matrix 𝐀 is full-row rank, we can minimize the square
+4
+sum of the propeller thrusts by applying the Moore-Penrose
+inverse [ ]
+𝑓
+𝐮 = 𝐀† . (16)
+4 𝝉
+The controller is exponentially stable and its proof follows
+the same logic in [4] by using 𝑊 𝐑 instead of 𝑊 𝐑 .
+𝐹 𝑆
+B. Rank(𝐀) = 5
+For a structure with at least two modules and rank(𝐀 )=2,
+𝐟
+the thrust vectors from all propellers are no longer co-linear
+but instead, co-planar. Thus, the structure is able to control
+an additional DOF. Since the second major axis of {𝐹 } is
+𝐱̂ , meaning that the structure is able to generate forces in
+𝐹
+𝐱̂ independently, the additional DOF is given to the rotation
+𝐹
+around 𝐲̂ . We choose to use this additional DOF to track
+𝐹
+the pitch angle of {𝐹 }, 𝜃𝑑. The desired attitude, 𝑊 𝐑𝑑 =
+𝐹
+[𝐱̂𝑑 𝐲̂𝑑 𝐳̂𝑑] of the structure is obtained by
+𝐳̂𝑐 = 𝐚 𝐫 , 𝐱̂𝑑 = Rot ( 𝑧, 𝜓𝑑) Rot ( 𝑦, 𝜃𝑑) 𝐞̂ , 𝐚 1 ‖ 𝐫‖
+𝐳̂𝑐 × 𝐱̂𝑑 𝐲̂𝑑 = , 𝐳̂𝑑 = 𝐱̂𝑑 × 𝐲̂𝑑. (17)
+‖ 𝐳̂𝑐 × 𝐱̂𝑑 ‖
+Different from (14), in (17), instead of projecting 𝐱̂𝑐 on the
+normal direction of 𝐲̂𝑑𝐳̂𝑑-plane to obtain 𝐱̂𝑑, we obtain 𝐱̂𝑑
+directly by applying the desired yaw and pitch angle on 𝐞̂ . 𝐳̂𝑐
+1
+is projected on the normal direction of 𝐱̂𝑑𝐲̂𝑑-plane to acquire
+the desired force in the 𝑥𝑧-plane of {𝐹 }, where lies any
+possible force that the structure can generate. This method
+makes sure the desired attitude captures the desired pitch
+angle. The projected components of the desired force vector
+in the 𝑥𝑧-plane of {𝐹 } are
+𝑓 = 𝑛𝑚 𝐚 ⋅ 𝐳̂ , and 𝑓 = 𝑛𝑚 𝐚 ⋅ 𝐱̂ . 𝑧 𝑟 𝐹 𝑥 𝑟 𝐹
+The columns of 𝐀 are co-planar vectors in the 𝑥𝑧-plane
+𝐟
+of {𝐹 }. Therefore, we remove the row in motor dynamics
+matrix 𝐀, which relates 𝐮 to the 𝐲̂ -component of the
+𝐹
+resulted force vector, to obtain a 5 × 4𝑛 matrix 𝐀 . Thus,
+5
+we modify (5) into
+[
+𝑓 𝑓 𝝉⊤
+]⊤
+= 𝐀 𝐮. As long as 𝐀
+𝑧 𝑥 5 5
+is full-row rank, we obtain the control input by computing
+the Moore-Penrose inverse,
+𝐮 = 𝐀† [ 𝑓 𝑓 𝝉⊤ ]⊤ . (18)
+5 𝑧 𝑥
+)m(x ref
+x
+0.5
+0.0
+0.5
+−
+)m(y
+1.0
+0.5
+)m(z
+20
+0
+20
+−
+)ged(φ
+0
+10
+−
+20
+−
+)ged(θ
+100
+0
+100 −
+0 5 10 15 20 25 30 35
+t(s)
+)ged(ψ
+Fig. 5: Experiment 1: An H-ModQuad structure of one
+module is tracking a helix. The dashed line represents the
+reference, and the solid line is the measurement.
+If 𝐀 is not full-row rank, it means that all the rotors are
+5
+in the 𝑦𝑧-plane. So we can follow the same analyses but
+removing the row of associated with 𝑓 instead of 𝑓 .
+𝑥 𝑦
+C. Rank(𝐀) = 6
+A structure with rank(𝐀)=6 has rank(𝐀 )=3. The structure is
+𝐟
+fully actuated and therefore, we can generate an acceleration
+vector 𝐚 = [𝐚 ⊤, 𝐚 ⊤]⊤. Based on (7), the desired control 𝐫 𝐑
+input is [ ] ( [ ]) 𝑛𝑚𝑊 𝐑⊤ 𝟎 𝟎 𝐮 = 𝐀† 𝑆 𝐚 + . (19)
+𝟎 𝐈 𝝎 × 𝐈 𝝎 𝑆 𝑆
+Due to motor saturation, the input vector 𝐮 might not always
+feasible, which requires to limit the input 𝐚. In the scope of
+this paper, we assume that the trajectory is feasible, and show
+the effectiveness of the control strategy when the desired
+pose is achievable.
+V. EXPERIMENTS
+Our experimental testbed uses the Crazyflie-ROS framework
+[18] with modified firmware to include the three controllers
+proposed in this paper. We use a motion capture system
+(Optitrack) operating at 120 Hz for vehicle localization. The
+modules measure their angular velocities using onboard IMU
+sensors; we store the predefined trajectories in the firmware
+as parametric functions of time. Time is synchronously
+updated using a radio transceiver. For the controller imple-
+mentation, we decentralize the attitude control and motor
+dynamics as in [7].
+For each module, we use the Crazybolt board as a flight
+controller. The cuboid frame is composed of carbon fiber
+rods connected by 3-D printed vertices. Each brushless motor
+is mounted on a 3-D printed base with a cylindrical wedge.
+194
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 6 =====
+0.5
+0.0
+0.5 −
+)m(x ref
+x
+0.5
+0.0
+0.5
+−
+)m(y
+0.75
+0.50
+0.25
+)m(z
+10
+0
+10
+−
+)ged(φ
+0
+10
+−
+)ged(θ
+10
+0
+10
+− 0 20 40
+t(s)
+)ged(ψ
+0.5
+0.0
+0.5 −
+)m(x ref
+x
+0.5
+0.0
+0.5
+−
+)m(y
+0.75
+0.50
+0.25
+)m(z
+10
+0
+10
+−
+)ged(φ
+10
+0
+10
+−
+)ged(θ
+10
+0
+10
+− 0 20 40
+t(s)
+)ged(ψ
+0.5
+0.0
+0.5 −
+Fig. 6: Experiment 2: An H-ModQuad structure of two
+modules track a rectangle with two different fixed pitch
+angles. The plot on the left shows the structure following
+the rectangle while keeping a pitch angle of -5 degrees; on
+the right shows the structure tracking the rectangle while
+keeping a pitch angle of 0 degrees.
+The angle of the wedge determines the motor orientation.
+Each module has a length of 12 cm, a height of 6 cm, and
+a weight of 135 g, including a 520-mAh 2-cell LiPo battery.
+The modules dock rigidly by connecting their vertices using
+short rods. Fig. 1 shows the prototype of four balanced
+modules and a structure composed of the four modules. We
+present three experiments on H-ModQuad structures with 4,
+5, and 6 controllable DOF.
+a) 4-DOF trajectory tracking: We use an 𝑅-module
+with all its propellers tilting 10 degrees in pitch to track a
+4-DOF trajectory (position and yaw orientation). Thus, the
+structure has the 𝐹 -frame specified by 𝑆 𝐑 = Rot(𝑦, 𝜋 ). We
+𝐹 18
+design a trajectory for the structure to move along a vertical
+helix in {𝑊 }. The helix centers at (-0.5, 0) in 𝑥𝑦-plane with
+a radius of 0.45 and oscillates along the 𝑧-axis between 0.45
+and 0.95 with a period of 14 seconds. While tracking the
+position, the structure is also rotating the yaw angle. The
+experiment result is shown in Fig. 5. We highlight that the
+4DOF structure of one module has an attitude 𝑊 𝐑 = 𝑆 𝐑⊤ 𝑆 𝐹
+during hovering, showing that we can drive the 𝐹 -frame to
+track the desired attitude.
+b) 5-DOF rectangle tracking: We use a 5-DOF struc-
+ture, composed of two 𝑅-modules, to track a rectangle on the
+𝑥𝑦-plane of {𝑊 } with a length of 0.8 m and a width of 0.6 m
+along 𝐲̂ . One module has all its propellers tilting 30 degrees
+𝑊
+in pitch and the other tilting -30 degrees in pitch. The resulted
+𝐹 -frame aligns with {𝑆}, thus 𝑆 𝐑 is a 3×3 identity matrix.
+𝐹
+The structure can track the rectangle trajectory when its {𝑆}
+has a pitch angle of 0 and −5 degrees, which illustrates
+)m(x ref
+x
+0.5
+0.0
+0.5
+−
+)m(y
+1.0
+0.5
+)m(z
+10
+0
+10 −
+)ged(φ
+10
+0
+10 −
+)ged(θ
+10
+0
+10
+− 0 10 20 30 40 50
+t(s)
+)ged(ψ
+Fig. 7: Experiment 3: An H-ModQuad structure of four H-
+ModQuad modules is tracking a rectangle with zero pitch
+and roll angles.
+the independence of its translation on 𝑥-axis and its pitch
+angle. The experiment result is shown in Fig. 6. We highlight
+when {𝑆} is pitching -5 degrees and moving in positive 𝑥-
+direction, the structure is moving in the opposite direction
+to where the structure can generate its maximum thrust.
+c) 6-DOF rectangle tracking: We use a 6-DOF struc-
+ture of four 𝑅-modules to track a rectangle with a fixed
+orientation. The modules have their propellers tilting ± 30
+degrees in pitch, and ± 30 degrees in roll, respectively. The
+𝐹 -frame aligns with {𝑆}, making 𝑆 𝐑 a 3×3 identity matrix.
+𝐹
+The experiment result is shown in Fig. 7. We highlight that
+when the structure is tracking the rectangle trajectory, its
+roll and pitch angles stay at 0 degrees, which shows the
+independence of translation and orientation.
+VI. CONCLUSION AND FUTURE WORK
+In this work, we propose a modular UAV that can in-
+crease its strength and controllable DOF from 4 to 5 and
+6. Different types of modules define different orientations
+for their propellers. The combination of the heterogeneous
+modules determines the number of controllable degrees of
+freedom. We extended the concept of the actuation ellipsoid
+to find the best reference orientation that can maximize the
+performance of the structure. We propose three controllers,
+one for each number of controllable degrees of freedom.
+The experiments in real robots show that we can control
+the degrees of freedom independently, i.e., the structure can
+translate independently on its orientation.
+In future work, we want to explore the optimization of
+module configurations in a structure to satisfy characteristics
+required by given tasks. We also want to combine the three
+control policies introduced in this paper into a universal one
+and take into consideration the motor thrusting limits.
+195
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 7 =====
+REFERENCES
+[1] N. Michael, D. Mellinger, Q. Lindsey, and V. Kumar, “The grasp
+multiple micro-uav testbed,” IEEE Robotics Automation Magazine,
+vol. 17, no. 3, pp. 56–65, 2010.
+[2] S. Bouabdallah, P. Murrieri, and R. Siegwart, “Design and control
+of an indoor micro quadrotor,” in IEEE International Conference on
+Robotics and Automation, 2004. Proceedings. ICRA ’04. 2004, vol. 5,
+2004, pp. 4393–4398 Vol.5.
+[3] T. Lee, M. Leok, and N. H. McClamroch, “Geometric tracking control
+of a quadrotor uav on se(3),” in 49th IEEE Conference on Decision
+and Control (CDC), 2010, pp. 5420–5425.
+[4] D. Mellinger and V. Kumar, “Minimum snap trajectory generation
+and control for quadrotors,” in 2011 IEEE International Conference
+on Robotics and Automation, 2011, pp. 2520–2525.
+[5] A. Alaimo, V. Artale, C. Milazzo, A. Ricciardello, and L. Trefiletti,
+“Mathematical modeling and control of a hexacopter,” in 2013 Inter-
+national Conference on Unmanned Aircraft Systems (ICUAS). IEEE,
+2013, pp. 1043–1050.
+[6] R. Oung and R. D’Andrea, “The distributed flight array,”
+Mechatronics, vol. 21, no. 6, pp. 908–917, 2011. [Online].
+Available: http://dx.doi.org/10.1016/j.mechatronics.2010.08.003
+[7] D. Saldaña, B. Gabrich, G. Li, M. Yim, and V. Kumar, “Modquad:
+The flying modular structure that self-assembles in midair,” in 2018
+IEEE International Conference on Robotics and Automation (ICRA),
+2018, pp. 691–698.
+[8] A. Franchi, R. Carli, D. Bicego, and M. Ryll, “Full-pose tracking
+control for aerial robotic systems with laterally bounded input force,”
+IEEE Transactions on Robotics, vol. 34, no. 2, pp. 534–541, 2018.
+[9] S. Rajappa, M. Ryll, H. H. Bülthoff, and A. Franchi, “Modeling,
+control and design optimization for a fully-actuated hexarotor aerial
+vehicle with tilted propellers,” in 2015 IEEE International Conference
+on Robotics and Automation (ICRA), 2015, pp. 4006–4013.
+[10] M. Ryll, H. H. Bülthoff, and P. R. Giordano, “Modeling and control
+of a quadrotor uav with tilting propellers,” in 2012 IEEE International
+Conference on Robotics and Automation, 2012, pp. 4606–4613.
+[11] M. Ryll, D. Bicego, and A. Franchi, “Modeling and control of fast-hex:
+A fully-actuated by synchronized-tilting hexarotor,” in 2016 IEEE/RSJ
+International Conference on Intelligent Robots and Systems (IROS),
+2016, pp. 1689–1694.
+[12] M. J. Duffy and T. C. Samaritano, “The lift! project–modular, electric
+vertical lift system with ground power tether,” in 33rd AIAA Applied
+Aerodynamics Conference, 2015, p. 3013.
+[13] D. Mellinger, M. Shomin, N. Michael, and V. Kumar, “Cooperative
+grasping and transport using multiple quadrotors,” Springer Tracts in
+Advanced Robotics, vol. 83 STAR, pp. 545–558, 2012.
+[14] H. Yang, S. Park, J. Lee, J. Ahn, D. Son, and D. Lee, “Lasdra: Large-
+size aerial skeleton system with distributed rotor actuation,” in 2018
+IEEE International Conference on Robotics and Automation (ICRA),
+May 2018, pp. 7017–7023.
+[15] M. Zhao, K. Kawasaki, T. Anzai, X. Chen, S. Noda, F. Shi, K. Okada,
+and M. Inaba, “Transformable multirotor with two-dimensional mul-
+tilinks: Modeling, control, and whole-body aerial manipulation,” The
+International Journal of Robotics Research, vol. 37, no. 9, pp. 1085–
+1112, 2018.
+[16] B. Gabrich, D. Saldaña, V. Kumar, and M. Yim, “A flying gripper
+based on cuboid modular robots,” 05 2018.
+[17] T. Yoshikawa, “Manipulability of robotic mechanisms,” The interna-
+tional journal of Robotics Research, vol. 4, no. 2, pp. 3–9, 1985.
+[18] W. Hönig and N. Ayanian, Flying Multiple UAVs Using ROS. Springer
+International Publishing, 2017, pp. 83–118.
+196
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:45:21 UTC from IEEE Xplore. Restrictions apply.

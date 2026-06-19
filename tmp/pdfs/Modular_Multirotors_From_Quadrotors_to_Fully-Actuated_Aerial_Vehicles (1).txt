@@ -1,0 +1,1147 @@
+
+
+===== PAGE 1 =====
+19328 IEEE TRANSACTIONS ON AUTOMATION SCIENCE AND ENGINEERING, VOL. 22, 2025
+Modular Multirotors: From Quadrotors to
+Fully-Actuated Aerial Vehicles
+Jiawei Xu , Member, IEEE, Diego S. D’Antonio, Member, IEEE, and David Saldan˜a
+Abstract—Traditional aerial vehicles are constrained to per-
+form specific tasks due to their adhoc designs. Based on
+modularity, we propose a versatile robot, H-ModQuad, that
+can adapt to different tasks by increasing its load capacity
+and actuated degrees of freedom. It is composed of cuboid
+modules propelled by quadrotors with tilted rotors. We present
+two families of module designs that bring scalable and versatile
+actuation to the aerial systems. By configuring multiple modules,
+H-ModQuad can increase its payload capacity and change its
+actuated degrees of freedom from 4 to 5 and 6. By modeling the
+actuation capability of H-ModQuad using actuation ellipsoids
+and wrench polytopes, we find the body frame of a vehicle
+that maximizes its thrusting efficiency. We also compare the
+vehicle capabilities against formally defined task requirements.
+We present the dynamics of H-ModQuad and integrate control
+strategies despite the vehicle design. The design and model are
+validated with experiments using actual robots, showing that H-
+ModQuad vehicles with different configurations provide different
+actuation properties. Fig. 1. Four heterogeneous torque-balanced modules of two types forming
+an 2-by-2 H-ModQuad structure. Each type of modules are diagonally placed
+Note to Practitioners—This paper presents the H-ModQuad, in the structure. This structure is used in Experiment 4, and the picture is
+a modular multirotor system designed to enhance the flexibility captured during its flight. The video of all narrated validations can be found
+and versatility of aerial vehicles. Traditional drones often need at https://youtu.be/Mxo0QpxU-9A.
+to be specifically designed or modified for different tasks, but
+H-ModQuad allows for quick reconfiguration to meet varying
+operational needs. By adding or rearranging modules, users can
+[1], transportation [2], and construction [3]. However, a major
+easily increase the vehicle’s load capacity or improve its force
+and torque generation characteristics. This adaptability makes problem with these vehicles is the lack of versatility. There
+H-ModQuad particularly useful in industries such as logistics for are two characteristics of versatility on which we would like
+transporting varying payloads, inspection and maintenance tasks to focus, the strength and the actuated degrees of freedom
+in hard-to-reach areas, and uncrewed tool wielding. Our ana-
+(ADoF). For instance, in object transportation, the hardware
+lytical tools provide pre-assembly vehicle capability assessment,
+and flight tests demonstrate that different modular configurations design depends on the weight and dimensions of the target
+grant the vehicle with distinct actuation characteristics suitable payload. An underpowered UAV cannot transport a heavy
+for diverse tasks without redesigning the modules. Therefore, H- payload in time and safety. Although an oversized UAV can
+ModQuad offers a versatile aerial solution, making it a valuable carry both large and small objects, it suffers from higher
+tool for a wide range of autonomous applications.
+energy consumption and limited motion capability in cluttered
+Index Terms—Uncrewed aerial vehicle, modular robots, motion environments. Having additional ADoF is the other desirable
+control. property for UAVs. For instance, a traditional quadrotor has
+four co-linear rotors, making the vehicle under-actuated. Exist-
+I. INTRODUCTION
+R ESEARCH on uncrewed aerial vehicles (UAVs) has ing solutions choose to control the three positional DOF and
+thrived in recent years, offering low-cost solutions for one DOF in the yaw angle of a quadrotor [4], requiring to
+tilt for horizontal translation. Adding redundant vertical rotors
+a wide spectrum of applications such as aerial surveillance
+to a quadrotor [5], or connecting multiple modular quadrotors
+Received 29 July 2024; revised 6 January 2025 and 19 May 2025; without changing the rotor orientation [6], does not increase
+accepted 8 July 2025. Date of publication 31 July 2025; date of current version the ADoF. As long as all the rotors point in the same direction,
+7 August 2025. This article was recommended for publication by Associate
+it remains impossible for the vehicles to translate horizontally
+Editor T. Xu and Editor J. Yi upon evaluation of the reviewers’ comments.
+This work was supported in part by NSF Award under Grant 2322840 and without tilting.
+Grant 2442475 and in part by U.S. Office of Naval Research (ONR) Award To address the limitation in underactuation, an approach is
+under Grant 544835. (Corresponding author: Jiawei Xu.)
+to increase the number of rotors in a multirotor vehicle and
+The authors are with the Autonomous and Intelligent Robotics Labo-
+ratory (AIRLab), Lehigh University, Bethlehem, PA 18015 USA (e-mail: change their orientation [7]. The orientation of the rotor can
+jix519@lehigh.edu; diego.s.dantonio@lehigh.edu; saldana@lehigh.edu). be fixed or actively changed. The problem with actively tilting
+This article has supplementary downloadable material available at
+https://doi.org/10.1109/TASE.2025.3594579, provided by the authors. rotors is that the tilt mechanism increases the complexity of
+Digital Object Identifier 10.1109/TASE.2025.3594579 vehicle and controller design, such as the articulated aerial
+1558-3783 © 2025 IEEE. All rights reserved, including rights for text and data mining, and training of artificial intelligence and
+similar technologies. Personal use is permitted, but republication/redistribution requires IEEE permission.
+See https://www.ieee.org/publications/rights/index.html for more information.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 2 =====
+XU et al.: MODULAR MULTIROTORS: FROM QUADROTORS TO FULLY-ACTUATED AERIAL VEHICLES 19329
+robot [8]. The work in [9] provides a universal control strategy
+for both underactuated and fully-actuated UAVs, but the design
+of the UAV is specific for certain tasks, which limits the
+versatility of each individual UAV design.
+Modular aerial robots offer a versatile and scalable way to
+increase their strength [6], [10] and capabilities [11], [12],
+[13]. When the task changes, a modular robot can adapt to
+new requirements by either adding modules or reconfiguring
+the modules. In addition to increasing the maximum force
+output, having more modules also provides redundancy to the
+system, which leads to enhanced robustness against mechan-
+ical deficiency or noise. As highlighted in the literature,
+modular robots can adapt to new tasks by swapping modules
+depending on the task without the need of redesigning the
+entire system [14], [15], [16]. With special designs, a modular
+system can even obtain new structural characteristics beyond Fig. 2. The taxonomy diagram of all aerial vehicle designs mentioned in
+this paper. We consider the their characteristics of versatility, modularity, and
+a simple scaling to the quantity of modules [17]. To tackle
+ADoF. Note that our modular multirotor vehicle design finds its classification
+transportation tasks, a modular UAV can change the number in the shaded cell as a modular versatile design that can change its ADoF.
+of modules in the vehicle to adapt to different payloads, for
+example, a pizza box versus a piano. For maintenance tasks
+such as drilling, the vehicle would reconfigure to enhance its II. RELATED WORK
+actuation for independent translation, i.e., although the ADoF
+remains the same after reconfiguration, the maximum force We review multirotor designs related to the versatility prob-
+that the vehicle can generate in a selected direction increases. lem in the literature. A taxonomy diagram based on whether
+Contribution: The main contribution of this paper is designs can adapt to different tasks, their modularity, and their
+twofold. ADoF, is shown in Fig. 2.
+A traditional quadrotor belongs to the category of task-
+1) We formally introduce the design concept of torque-
+specific underactuated vehicles, limited by its payload capacity
+balanced quadrotor modules that generate zero torque
+and ADoF. One method of increasing its payload limit is
+when all rotors produce identical thrust forces. Based
+to increase the number of rotors in the vehicle, such as
+on this concept, we propose two families of quadrotor
+a hexarotor [5], although the co-linear rotors indicate the
+modules, R- and T-modules, and prove that both families
+design is still underactuated. The work in [7] introduces
+satisfy the torque-balanced property. 2) We propose a
+the design and control of a hexarotor with tiltable rotors.
+model based on polytopes in the 6-D wrench space to
+Using six unidirectional rotors, the vehicle can actuate up to
+formalize the concept of vehicle actuation capabilities.
+6 degrees of freedom. By configuring the rotor angles, the
+While similar torque-balanced module designs exist in the robot minimizes energy consumption when following a certain
+literatures [18], [19], and [20], our design enables H-ModQuad trajectory. However, trajectory-specific optimization limits the
+vehicles to achieve unique actuation capabilities, such as full versatility of this approach. By integrating eight bidirectional
+actuation, through different modular assemblies. Compared motors, the authors in [24] present a design that achieves
+to force envelopes [9], [21], [22], our actuation polytopes omnidirectional motion. This design enables the multirotor
+account for realistic constraints, including motor saturation vehicle to hover in an arbitrary attitude at the cost of structural
+and force-torque coupling. With formally defined actuation complexity and energy consumption. The work in [25] and
+requirements for tasks as sets of 6-D wrenches, we provide [26] presents an omnidirectional multi-rotor design with no
+methods to evaluate an H-ModQuad vehicle’s polytope against less than seven unidirectional motors. Reference [25] show
+task requirements to verify its suitability. a controller that guarantees nonnegative thrust forces for all
+Our previous work [23] introduced R-modules and H- rotors, ensuring that the desired states are achievable using
+ModQuad vehicles with varying ADoF based on hetero- unidirectional motors. Reference [26] provide an optimization
+geneous module configurations. Generalizing R-modules to of motor placement to minimize control input.
+the torque-balanced module concept, this paper introduces As an alternative to increasing the number of rotors, [27]
+a new family of quadrotor designs, called T -modules, presents the controller for a quadrotor with actively tilting
+which feature enhanced torque generation. Using the newly rotors to achieve full actuation. Reference [28] presents a
+developed actuation capability model, we demonstrate that hexarotor that uses a servomotor to tilt the rotors syn-
+a fully-actuated vehicle assembled solely of T-modules can chronously. The ability to transition between under actuation
+hover at significantly higher tilt angles than one composed and full actuation allows the vehicle to choose operating modes
+only of R-modules. Three new experiments validate this between high efficiency and full actuation. These vehicle
+theory, complement the original experiments, and highlight designs feature fixed mechanisms. Given a new task beyond
+the increasing ADoF of H-ModQuad vehicles composed of their original capabilities, the multirotors cannot meet the
+torque-balanced modules. requirements.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 3 =====
+19330 IEEE TRANSACTIONS ON AUTOMATION SCIENCE AND ENGINEERING, VOL. 22, 2025
+We consider modularity a key characteristic for a robot
+design to be versatile in different tasks, as validated in
+ground vehicles [29], [30], water-surface vehicles [31], and
+manipulator arms [32]. Researchers apply similar princi-
+ples to multirotor vehicles. The works in [33] and [34]
+present a hexagonal one-rotor module that composes a flight
+array with increasing strengths. Reference [35] develop a
+modular multirotor system based on elementary modules Fig. 3. An R-module with its coordinate frames, and dimensions. Note that
+of tetrahedron-shaped quadrotors. Reference [6] introduce a this module composes a structure, thus {S } aligns with {M1 }.
+cuboid quadrotor module that flies independently and assem-
+bles with other modules in-air into a larger structure. Adding
+located on the xy-plane of {M } in a square configuration.
+more modules to a structure improves redundancy and payload i
+Each rotor has a rotor frame, {P }, with its z-axis pointing
+capacity, but the ADoF remains the same since all rotor forces i j
+in the direction of the rotor force. The orientation of {P } in
+are parallel. The quadrotor modules presented in [36] use i j
+{M } is specified by the rotation matrix iR ∈ SO(3). In a
+micro-servos to actively tilt the rotors, achieving additional i j
+traditional quadrotor, all the rotors are parallel to the z-axis
+ADoF and enabling full actuation. Reference [37] show that
+of the quadrotor. In our case, the rotors can point in different
+connecting bicopter modules equipped with actively tilting
+directions. The associated coordinate frames of a module are
+rotors increases load capacity and ADoF, allowing the assem-
+illustrated in Fig. 3. The structure frame, denoted by {S }, has
+bled multirotor vehicle to meet diverse task requirements.
+its origin in its COM. Without loss of generality, we align all
+Modular multirotors typically require special controllers that
+module frames in the structure and define the x-, y- and z-axes
+distribute actuation across modules while handling distur-
+of {S } as in parallel to the x-, y- and z-axes of all modules in
+bances caused by modular connections. Researchers have
+the structure. The location and orientation of {S } in the world
+explored approaches such as modular reinforcement learn-
+frame {W} is specified by the vector r ∈ R3 and the rotation
+ing [38], robust control [39], and distributed control [40].
+These modular vehicle designs adapt to different tasks, such matrix WR S ∈ SO(3).
+The spinning of rotor j ∈ {1, . . . , 4} in module i generates a
+as transporting heavier payloads and following higher-DOF (cid:2) (cid:3)
+thrust f ∈ 0, f , and an air drag. The resulted force and
+trajectories, making them versatile solutions. i j max
+torque in {M } are f = f iR ˆz, and τ = f (−1) j km iR ˆz,
+Among the existing literature, researchers are striving to where k and i k are c i o j effic i i j ents j experime i j ntally i j obtaine k d f . T j he
+increase the actuation capabilities and versatility of multi- f m
+structure generates total force f and torque τ in the structure
+rotor vehicles by deploying novel designs, applying novel
+frame {S } which is the vector summation of all rotor forces
+control strategies, and utilizing modularity. However, few
+and torques,
+designs have considered the use of modular robots that
+adapt to various tasks without reconstructing modules. In f = X SR f , τ = X τ f + τd , (1)
+this work, we seek to fill this gap by presenting a ver- i i j i j i j
+i j i j
+satile modular multirotor vehicle composed of lightweight
+modules that can achieve a varying number of ADoF that where τ f = p × SR f is the torque generated by the thrust
+i j i j i i j
+can be applied to perform a variety of task with different and τd = SR τ is the air drag; p ∈ R3 is the position of
+i j i i j i j
+requirements. each rotor in {S }, and SR is the orientation of module i in
+i
+{S }. Letting u = (cid:2) f , f , . . . , f (cid:3)(cid:62) be the input vector, we
+11 12 n4
+III. PROBLEM STATEMENT combine (1) in a matrix form to define the 6 × 1 wrench
+This work focuses on modular multirotor vehicles composed
+of n modules, denoted by the set M = {M , M , · · · , M }. w = Au, where (2)
+1 2 n " #
+Definition 1 (Module): A module is an autonomous quadro- A = (cid:20) A f (cid:21) = . .S.R i j zˆ· · · (3)
+tor within a cuboid frame. The rotors do not necessarily have A . . .p ×SR zˆ+SR (−1)i+ j km zˆ· · ·
+to be vertical to the bottom face of the module, and their
+τ i j i j i j kf
+orientation defines the actuation characteristics of the module. is a 6 × 4n design matrix that maps the input forces into the
+Module M i ∈ M has a mass m i and an inertia tensor J i . total wrench in {S }; and SR i j = SR i iR j . The design matrix
+Multiple modules can connect to each other by aligning their is also known as the allocation matrix [26]. In traditional
+sides to create a rigid connection, which assembles a structure. multirotor vehicles, this matrix is fixed after building the robot.
+Definition 2 (Structure): A structure is a set of n ≥ 1 In our case, this matrix can change depending on the module
+rigidly connected modules forming a single multirotor vehicle. configuration. The dynamics of the structure can be described
+Its inertia tensor is denoted by J and its mass by m. using the Lagrangian for robot motion [41], [42] as
+We denote the standard basis in R3 by xˆ = [1, 0, 0](cid:62) , yˆ = (cid:20) (cid:21) (cid:20) (cid:21)
+r¨ r˙
+[0, 1, 0](cid:62), and ˆz = [0, 0, 1](cid:62). The world reference frame {W} is M + C + g = Bw, (4)
+ω˙ ω
+fixed with its z axis pointing upward. Module i in the structure
+has a module frame {M i } with its origin in the module’s center where M = (cid:20) mI 3 0 (cid:21) , C = (cid:20) 0 0 (cid:21) , B = (cid:20)WR S 0 (cid:21)
+of mass (COM). We define the “front” direction of the module 0 J 0 ω× J 0 I
+3
+as the x-axis and the “up” as the z-axis. The four rotors are are the mass matrix, the Coriolis matrix, and the wrench
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 4 =====
+XU et al.: MODULAR MULTIROTORS: FROM QUADROTORS TO FULLY-ACTUATED AERIAL VEHICLES 19331
+transformation from the structure’s local frame to the world
+frame, respectively. r˙, r¨ are the linear velocity and acceleration
+of the structure; ω, ω˙ are the angular velocity and acceleration
+of the structure in {S }, respectively. The (·)× operator converts
+a vector into the corresponding skew-symmetric matrix. g =
+[mgˆz(cid:62) 0(cid:62)](cid:62) is the gravity, g is the gravitational acceleration,
+and I is the 3 × 3 identity matrix.
+3
+Note that rank(BA) defines the number of actuated degrees
+of freedom. Regarding (4), it determines the number of entries
+in [r¨(cid:62) ω˙ (cid:62)](cid:62) that the vehicle can control independently. Since
+Fig. 4. The procedure of designing torque-balanced modules.
+B is composed of a rotation matrix and an identity matrix
+diagonally, it is always full-rank. Thus, the ADoF depend on
+rank(A). k m . Therefore, a practical solution for τ i = 0 is obtained by
+We design the modules with fixed rotor configurations that solving P τ f = 0 and P τd = 0. From (1), we obtain
+i j i j
+fly independently. When assembled, they can have 4, 5, or
+P4 p × MR zˆ = 0, (5)
+6 ADoF. The modular configuration determines the actuation j=1 j j
+capabilities of a structure, such as its ADoF, maximum tilt P4 MR (−1) jzˆ = 0, (6)
+j=1 j
+angle, and maximum strength. Since the design matrix A of a P4 MR zˆ = λR(cid:63)zˆ, (7)
+structure incorporates the rotor configuration information, we
+j=1 j
+model the actuation capabilities of a structure based on A. We where (5) ensures P τ f = 0 and (6) ensures P τd = 0
+i j i j
+implement a controller for the multirotors that considers any under the assumption of unit input force generation u = 1.
+structure regardless of its ADoF or module configuration. In Note that the discussion is based on one module, meaning
+this paper, we focus on solving the following problems. that n = 1. For conciseness, we omit the module index i in
+this section and p represents the position of the j-th rotor in
+Problem 1 (Module Design): Given a desired direction of j
+the module frame. We discuss two cases for R(cid:63).
+the maximum thrust of a module, specified by the rotation
+matrix R(cid:63), design a module that can hover while maintaining First, when R(cid:63) (cid:44) I 3 , the unique solution is MR j = R(cid:63) for all
+j = 1, . . . , 4, ignoring the rotor frames’ rotation around their
+the given orientation.
+z-axis under the constraint of R(cid:63) ˆz lies in the upper hemi-unit
+Problem 2 (Modeling Actuation Capabilities): Given a sphere. This leads us to define a specific type of module that
+structure with design matrix A, develop an analytical model creates a sub-group of torque-balanced modules.
+that formalizes the robot capabilities. Definition 4 (R-module): An R-module is a quadrotor
+module with all its rotors pointing in the same direction in
+Problem 3 (Controlling H-ModQuad): Given a structure
+{M}, specified by the rotation matrix MR = R(cid:63), ∀ j = 1, . . ., 4.
+with either 4, 5 or 6 actuated degrees of freedom, derive a j
+We prove in [23] that an R-module is torque-balanced.
+trajectory tracking controller that combines the three cases.
+All rotors of an R-module are in the same direction, which
+infers λ = 4, ensuring maximum force generation in a single
+direction.
+IV. TORQUE-BALANCED MODULE Second, when R(cid:63) = I , the rotors of a module can point
+3
+in different directions. Since R-modules maximize force in
+A desirable characteristic of a module to fly independently
+certain directions, we designed a new solution that allows the
+is torque-balance, which means that the module can hover
+module to generate a higher torque, which defines the second
+without rotating when all rotors generate identical forces.
+type of torque-balanced modules.
+Definition 3 (torque-balanced module): A torque-balanced
+Definition 5 (T-Module): A T-module is a module with
+module is a module that generates zero torque when all its
+its rotors tilted at an angle η around their arm vector p ,
+rotors generate a unit force, i.e., if u = 1, then τ = 0. j = 1, . . ., 4. The angles satisfy j η = η = −η = −η . Making j
+1 3 2 4
+For Problem 1, we find the design criterion for a torque- η = η , we characterize a T-module with the parameter η.
+balanced module. Given a unit force vector ˆf (cid:63) , find MR of 1
+j
+Proposition 1: If a module is a T-module, defined by the
+the four rotors and a scalar value λ > 0, such that when
+all the rotors generate a unit force, i.e., u = 1, the force tilt angle η, the module is a torque-balanced module.
+and torque of the module are τ = 0and f = λ ˆf (cid:63) , where We provide the proof of Proposition 1 in Section I of the
+ˆf (cid:63) = R(cid:63) ˆz determines the direction of the module force in supplementary file.
+{M i } specified by the rotation matrix R(cid:63) and the magnitude of Fig. 3 and 5a show the examples of an R- and a T-
+the desired force, λ. We assume λ > 0 because λ = 0 means module, respectively. The Venn diagram in Fig. 5b illustrates
+that the module generates zero force and does not hover. R(cid:63) the relations between R- and T-modules, Fig. 4 shows the
+is determined during the module design. procedure for designing these two families of torque-balanced
+Based on (1), the local torque of a module τ i depends on modules, and Table I summarizes the differences between
+thrust τ f , and drag τd . Typically, the torque created by the them. A module can refer to a R-module or a T-module.
+i j i j
+force, τ f , is much greater than by the drag, τd because k (cid:29) When a set of modules that include T- and/or R-modules
+i j i j f
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 5 =====
+19332 IEEE TRANSACTIONS ON AUTOMATION SCIENCE AND ENGINEERING, VOL. 22, 2025
+A. Actuation Ellipsoid
+The work in [43] introduced manipulability ellipsoids for
+robot-arm manipulation by characterizing the response of a
+manipulator based on its design matrix. We extend the concept
+for H-ModQuad, characterizing the output force in response
+to rotor input to reveal the direction in which the vehicle is
+most capable of generating force.
+As described in (3), A is composed of two parts, A
+f
+and A which are its first and last three rows, respectively.
+τ
+Note that A maps the input rotor force to the total force
+f
+in {S }. We apply singular value decomposition (SVD) on A
+f
+and use the singular vectors to define the actuation ellipsoid.
+After normalizing all singular values, we choose the singular
+vector associated with the largest singular value as the semi-
+major axis of the actuation ellipsoid, z , attaching the center
+F
+of the ellipsoid to the origin of {S }. The singular vector
+Fig. 5. (a) T-modules have their rotors tilted around the arms; (b) A Venn associated with the second largest singular value is chosen
+diagram showing the relations between R- and T-modules. as the second semi-major axis of the actuation ellipsoid, x ,
+F
+TABLE I and the singular vector associated with the smallest singular
+DIFFERENCES BETWEEN R- AND T-MODULES value is chosen as the semi-minor axis of the actuation
+ellipsoid, y .
+F
+It is possible that the second and third largest singular
+values are identical after z is found. For instance, when
+F
+rank(A ) = 1, all the force vectors from the rotors are
+f
+co-linear, and the two smallest singular values given by
+TABLE II
+SVD are 0 and z is in the direction of the thrust force.
+MODULE TYPES, ADOF AND TRAJECTORY TYPES OF THE EXPERIMENTS F
+In these cases, we set the direction of the second semi-
+major axis closest to the x-axis of {S }, denoted by xˆ , i.e.,
+S
+x = (cid:107)x (cid:107)xˆ , where (cid:107)x (cid:107) is the magnitude of the singular
+F F F F
+vector associated with the second largest singular value, and
+xˆ = vargmaxv · xˆ , where (cid:107)v(cid:107) = 1 emphasizes that the unit
+F S
+vector xˆ is the direction of the second semi-major axis we
+F
+choose, and v · z = 0 ensures the major and minor axes
+F
+of the ellipsoid are orthogonal. The semi-minor axis of the
+is assembled into a single rigid structure, it forms an H-
+ellipsoid is y = (cid:107)y (cid:107)yˆ , where (cid:107)y (cid:107) is the magnitude of the
+ModQuad structure, or simply a structure. We highlight that a F F F F
+singular vector associated with the smallest singular value,
+T-module with η (cid:44) 0 indicates SR (cid:44) I in (3), which results
+i j 3 and the direction of the semi-minor axis is yˆ = ˆz × xˆ ,
+in the cross product having a nonzero component in the z- F F F
+ˆz = zF .
+axis. This means that a T-module is capable of generating F (cid:107)zF (cid:107)
+The actuation ellipsoid depicts the structure’s capability of
+torque in its z-axis not only from propeller drag but also
+generating force in different directions, as shown in Fig. 6.
+from thrust, enhancing the torque generation. Furthermore, we
+The higher distance between the boundary of the ellipsoid
+hypothesize that the integration of T-modules into a structure
+and the origin of {S } means that in the direction the structure
+allows the structure to achieve higher tilting angles before rotor
+can generate force more efficiently. We use this model in
+saturation.
+Section VI to find the initial robot frame that the structure
+can use to maximize hovering efficiency.
+V. ACTUATION CAPABILITY MODELS
+Since the design matrix A contains all the information
+B. Actuation Polytope
+regarding the configuration of a structure, including the posi-
+tion and orientation of the rotors in S, our analysis focuses on The actuation ellipsoid of an H-ModQuad characterizes
+modeling the actuation capabilities of the structure based on A. the capability of the vehicle to generate force in different
+We draw inspiration from the manipulability ellipsoid [43] and directions disregarding the constraints on the rotor input, such
+the force envelope [19], [21], [22], [44] and develop two mod- as the unidirectionality of the rotor rotation and the saturation.
+els that serve different purposes. The first model, the actuation These constraints limit the actuation capability of H-ModQuad
+ellipsoid, provides an efficient analytical insight into the force vehicles to meet aerial task requirements. Since most interac-
+capabilities of a structure. The second model, the actuation tion between an H-ModQuad and objects in the environment
+polytope, involves higher computational complexity but can involves physical contact, we model the requirement of an
+accommodate realistic constraints, which allows designers to aerial task for a vehicle as a set of total wrenches that the
+evaluate the vehicles against the requirements of aerial tasks. vehicle must generate in {S }.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 6 =====
+XU et al.: MODULAR MULTIROTORS: FROM QUADROTORS TO FULLY-ACTUATED AERIAL VEHICLES 19333
+we can compare each element of T with W of a structure.
+Given a required wrench w ∈ T = χ wˆ , where χ and wˆ are
+r r r
+the magnitude and unit vector of w , we find the maximum
+r
+magnitude, χ, of the wrench the vehicle can generate in the
+direction of w by solving the optimization problem
+r
+max χ,
+u
+subject to 0 (cid:22) u (cid:22) f ,
+max
+Au = χwˆ . (9)
+Since 0 ∈ W always holds true by setting u = 0 and W is
+convex, if χ ≥ χ , then w ∈ W, meaning that the vehicle is
+r r
+able to satisfy the task requirement w .
+r
+The boundary of W provides an intuitive visualization of
+the actuation capabilities due to its convexity. By solving
+(9) for all wˆ that is on a unit 6-sphere, i.e., finding the
+greatest wrenches in W in all possible directions, we obtain
+the boundary of W. By projecting the boundary into the
+Fig. 6. Side view of four structures, each composed of two types of modules.
+R3 force space, we obtain the force envelope of a structure.
+The black arrows represent the direction of the rotor force. The purple ellipses
+represent the actuation ellipsoid projected on the xz-plane of {S }. Similarly, we can obtain the torque envelope by projecting
+the boundary of W into the torque space. However, in
+reality, the force and torque that a structure generates are
+Definition 6 (Task Requirement): A task requirement is a
+coupled. For example, when hovering, a structure needs to
+set of wrenches T = {w , w , . . ., w } ⊂ R6 that a multirotor
+1 2 t maintain zero torque while keeping the negative gravity in
+vehicle needs to generate to perform the task.
+its force envelope, which limits the possible forces it can
+Each element w ∈ T is a stacked vector of simultaneously
+t generate, rendering achievable only a fraction of the force
+required force and torque necessary for completing a task.
+envelope. We highlight that such a coupling relationship can
+Designers must ensure that an aerial vehicle is capable of
+be taken into account by incorporating additional constraints
+performing its intended task. Typical evaluation of actuation
+in Eq. (9).
+capability involves constructing and testing of prototypes,
+Taking the example of determining the maximum tilt angle
+which can be time-consuming despite the modularity of H- of a structure without rotation, we add a constraint A u = 0
+τ
+ModQuad. Therefore, we develop a method to understand to (9) and project the polytope into the R3 force space.
+the actuation capability of a structure before assembly and
+This new constrained polytope of the force envelope, namely,
+experimental evaluation. We develop actuation polytope as
+force polytope, reveals the available forces the structure can
+the abstraction of the actuation capability for multirotor vehi- generate without tilting. Since it is attached to {S }, the force
+cles composed of unidirectional rotors with fixed poses in a
+vector that compensates gravity g must rotate inside the
+vehicle. Inspecting the actuation polytope of a vehicle, we
+force polytope depending on the structure’s attitude. To verify
+understand its actuation capabilities and can further recon-
+whether the structure is capable of achieving the desired
+figure the modules to achieve better compatibility with a attitude WRd while hovering, we calculate the force required
+S
+task. to generate in {S }, f d = (WRd )(cid:62) g. This force being the
+S
+Based on (2) and (3), the design matrix A converts the
+only element in the task requirement, we compare its mag-
+rotor force to the total wrench in {S }. Since the unidirectional nitude (cid:107) f d(cid:107) with the maximum force that the structure can
+rotors can generate a maximum thrust force f max , the set of generate in the direction of f d by replacing wˆ with fd ,
+all possible wrenches that a structure can generate is (cid:107) fd(cid:107)
+and A with A in (9). If the maximum force magnitude
+f
+W = ˚ Au | 0 (cid:22) u (cid:22) f , u ∈ R4n(cid:9) , (8) χ > (cid:107) f d(cid:107), then we confirm the structure is able to hover at
+max
+a desired attitude WRd . Using this method, we calculate that
+S
+where “(cid:22)” stands for element-wise comparison and the lower the maximum tilt angle of the structure used in Experiments
+bound 0 emphasizes the motor unidirectionality. The con- 4, 5, and 6 is 37.9◦ in both roll and pitch, compared to
+straints on the input 0 (cid:22) u (cid:22) f represent the intersection of 12◦ for the structure used in Experiment 3. These theoretical
+max
+2 · 4n half-spaces in the R4n input space, which is a convex results are tested in the experiments and compared with our
+polyhedron [45]. Since the polyhedron is only constrained with analysis.
+upper and lower bounds along each axis, it is a hypercube. The When designing a structure, we examine its force poly-
+linear mapping of the hypercube with the matrix A to the set tope to determine whether the structure satisfies the intended
+of all possible wrenches W ⊂ R6 preserve the convexity and task requirements. In [46], we show how to leverage the
+boundedness. Thus, W is a convex polytope in R6 wrench actuation polytope to find the optimal configuration of a
+space, which we define as actuation polytope. growing structure given a limited number of homogeneous
+The actuation polytope in (8) is an infinite set in R6. Since T-modules. Table I in the supplementary file shows some
+the task requirement T is defined as a set of required wrenches, different structure configurations suitable for different tasks.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 7 =====
+19334 IEEE TRANSACTIONS ON AUTOMATION SCIENCE AND ENGINEERING, VOL. 22, 2025
+Fig. 7. Control Diagram: We track the desired pose of {F}, rd(t), WRd
+F
+(t) using feedback on the pose of the structure frame {S }, WRS (t), r(t). The Motor
+Dynamics block is characterized by the matrix (DA)†. The rotation matrix from {S } to {F}, SRF, is computed based on the structure configuration.
+VI. CONTROL
+Our approach for trajectory tracking control is composed of
+two parts: position and attitude. Fig. 7 shows an overview of
+the control strategy in a centralized way where all modules in
+the structure are controlled based on a trajectory function and
+a single stream of measurements.
+Given a desired trajectory function of time, rd, a classical
+PID trajectory tracking control can compute an acceleration
+vector a by deriving the tracking errors, e = rd − r, and,
+r r
+e = r˙d − r˙, using the feed-forward equation,
+v
+Z
+a = K e + K e + K e dt + gzˆ + r¨d, (10)
+r r r v v i,r r
+where K , K , and K are positive-definite gain matrices.
+r v i,r
+In order to efficiently achieve the desired acceleration based
+on the structure configuration, we introduce the concept of Fig. 8. Four H-ModQuad configurations. In (a), the vehicle composed of four
+F-frame using the actuation ellipsoid. We note that in the identical R-modules has 4 ADoF. In (b), the vehicle is composed of two pairs
+of R-modules, each pair having the same R(cid:63), thus having 5 ADoF. In (c),
+direction of the semi-major axis of the ellipsoid, ˆz , the struc-
+F the vehicle is fully-actuated, composed of four T-modules. In (d), the vehicle
+ture is able to maximize force generation, and in the direction composed of two T-modules back to back is omnidirectional based on the
+of the second semi-major axis, xˆ , the structure maximizes its definition given by [25].
+F
+force generation in the normal plane of ˆz .
+F
+Definition 7 (F-frame): The F-frame of a structure, denoted where K and K are positive-definite gain matrices. Different
+R ω
+by {F}, is a coordinate frame with its origin at the origin of {S }; from the approach proposed by [4], our attitude error is not
+the z-axis, ˆz F , points towards the direction where the structure with respect to the structure frame, {S }, but the F-frame. Our
+can generate its maximum thrust; the x-axis, xˆ F , points towards control policy depends on rank(A). We study each case.
+the direction where the structure can generate its maximum
+thrust on the normal plane of ˆz .
+F 1) 4 ADoF:
+Therefore, we obtain the rotation matrix from {S } to the F-
+frame, SR = (cid:2) xˆ yˆ ˆz (cid:3) , where yˆ = ˆz × xˆ . To maximize For a structure with rank(A) = 4, as shown in Fig. 8(a),
+F F F F F F F we control the position and yaw angle of the structure using a
+the hover efficiency, we derive the attitude tracking errors
+geometric controller [4]. We project the desired thrust vector
+based on the F-frame instead of {S }.
+on the z-axis of {F} to increase hover efficiency. Given a
+We compute the attitude error in SO(3) with respect to the
+desired acceleration a and a desired yaw ψd, the desired
+F-frame based on [4]. Since the structure has attitude WR and r
+F attitude is WRd = [xˆ d yˆd ˆzd], where
+angular velocity ω, the angular tracking error is F
+a
+e = 1 (cid:16)(cid:0)WRd (cid:1)(cid:62) WR SR − (cid:0)WR SR (cid:1)(cid:62) WRd (cid:17)∨ , 3zˆd = (cid:107)a r r (cid:107) , xˆ c = [cos(ψd), sin(ψd), 0](cid:62)
+R 2 F S F S F F zˆd × xˆ c
+e = ω − (cid:0)WR SR (cid:1)(cid:62) WRd ωd, (11) yˆd = , xˆ d = yˆd × zˆd. (13)
+ω S F F (cid:107)zˆd × xˆ c(cid:107)
+where the “vee” operator, ∨, maps a skew symmetric matrix
+2) 5 ADoF:
+to R3. In order to maximize the actuation efficiency of the
+structure, our controllers drive the attitude of {F} to the desired A structure with n ≥ 2 and rank(A)=5 has 5 ADoF, as
+attitude WRd . As a result, the attitude of {S } converges to shown in Fig. 8(b). We choose to use the additional ADoF
+WRd SR(cid:62). Th F en, the necessary angular acceleration to compen- in xˆ F to track the pitch of {F}, θd. The desired attitude is
+F F WRd = [xˆ d yˆd ˆzd] where
+sate the attitude error is F
+a
+a R = −K R e R − K ω e ω , (12) 3zˆc = (cid:107)a r r (cid:107) , xˆ d = Rot(z, ψd) Rot(y, θd) xˆ ,
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 8 =====
+XU et al.: MODULAR MULTIROTORS: FROM QUADROTORS TO FULLY-ACTUATED AERIAL VEHICLES 19335
+zˆc × xˆ d
+yˆd = , zˆd = xˆ d × yˆd, (14) A. H-ModQuad Robots
+(cid:107)zˆc × xˆ d(cid:107)
+1) Design: We build the H-ModQuad modules based on
+where the operators Rot (x, ·) , Rot (y, ·) , and Rot (z, ·) convert Crazyflie quadrotors. Each module has four brushless motors
+the Euler angles in roll, pitch, and yaw into rotation matrices, and a Crazyflie Bolt control board, weighing 135 g including
+respectively. Different from (13), we obtain xˆ d in (14) by a 2-cell LiPo battery, with a payload capability of 128 g2 . The
+applying the desired yaw and pitch on xˆ . ˆzc is projected in the docking mechanism consists of permanent magnets mounted
+normal direction of xˆ d yˆd-plane to acquire the desired force at the 3D-printed module frame corners. The disc-shaped light-
+in the xz-plane of {F}, in which all possible forces that the weight Neodymium magnets create rigid connection between
+structure can generate are co-planar. This method ensures that modules. Our experiments assume the docking is completed
+the desired attitude captures the desired pitch angle. and focus on the behaviors of the assembled structures.
+2) Localization and Communication: In the experimen-
+tal testbed, we use the Crazyflie-ROS framework [47] to
+3) 6 ADoF:
+command the robots. We modify the Crazyflie firmware.3
+For a structure with rank(A) = 6, as shown in Fig. 8(c)
+For localizing the quadrotors, we use the Optitrack system
+and (d), the vehicle is fully actuated. Therefore, the desired
+operating at 120 Hz. The IMU onboard measures the angular
+attitude WRd is chosen independently.
+F velocities and linear accelerations. The IMU and tracking
+Substituting WRd in (11) and replacing the errors in (12),
+F system readings are combined with an extended Kalman filter
+we obtain the desired angular acceleration a . Combining a
+R R onboard [48]. In the experiments, the structure composes a
+with the desired positional acceleration vector a , the desired
+r rigid body in the Optitrack system, of which the pose is
+acceleration vectors become a = (cid:2) a (cid:62), a (cid:62)(cid:3)(cid:62) . To implement
+r R transmitted to all the modules. The central station broadcasts
+feedback linearization, we let the structure to generate wrench
+commands in the form of desired position, orientation, linear
+w in {F} based on (4),
+and angular velocity of the structure. All modules run the
+(cid:20)WR(cid:62) 0 (cid:21) (cid:18) (cid:20) 0 (cid:21)(cid:19) position and attitude controller independently based on their
+w = F a + . (15)
+0 J ω × Jω own state estimation and calculate the input as given in (17)
+based on the distributed motor dynamics (DA)† D that we
+i
+To generalize to all cases of rank(A), we modify (2) into
+implement prior to the experiments. Therefore, there is no
+Dw = DAu, with the Dimensioning matrix
+necessity for inter-robot communication.
+8h i
+D =
+ˆˆˆˆˆˆˆˆˆ<
+"
+0
+h
+4
+1
+×
+0
+2
+i
+I 4
+0 1×
+,
+4
+#
+,
+r
+r
+a
+a
+n
+n
+k
+k
+(
+(
+A
+A
+)
+)
+=
+=
+4
+5
+,
+, (16)
+B
+di
+.
+ff In
+E
+er
+x
+e E
+p
+n
+e
+x t
+r
+p
+i
+s e
+m
+t r r i
+e
+u m
+n
+c
+t
+t e
+s
+u n r t e s s 1 c , om 2, po an se d d 3 o , f w R e -m v o a d li u d l a e t s e . o In ur E m xp e e t r h i o m d en o t n s
+ˆˆˆˆˆˆˆˆˆ:I
+6
+0
+,
+4×2
+I
+4
+rank(A) = 6,
+4
+st
+,
+ru
+1
+5
+c
+)
+,
+tu
+E
+a
+r
+n
+x
+e
+p
+d
+c
+e
+o
+r
+6
+i
+m
+,
+m
+p
+w
+e
+o
+n
+e
+s
+t
+e
+s
+1
+d
+h
+:
+o
+o
+w
+f
+W
+T
+e
+t
+-
+h
+m
+v
+e
+a
+o
+l
+p
+d
+id
+e
+u
+a
+r
+l
+f
+e
+te
+o
+s
+r
+.
+m
+ou
+a
+r
+nc
+c
+e
+on
+o
+tr
+f
+ol
+a
+ler
+fu
+b
+ll
+y
+y
+t
+a
+e
+c
+s
+t
+t
+u
+in
+a
+g
+ted
+a
+structure that has an F-frame that is not aligned with {S }.
+where I ∈ Ra×a stands for an a × a identity matrix, and
+a A single R-module forms such a structure, with all its rotors
+0 ∈ Ra×b represents a zero matrix of size a × b. We can
+a×b tilting 10 degrees in pitch. Thus, the structure of one module
+then calculate the desired input vector by applying module- has the F-frame specified by S R = Rot (cid:0) y, π (cid:1) . The structure
+wise Moore-Penrose inverse on matrix DA, F 18
+tracks a 4-DOF vertical-helix trajectory in {W}. The helix
+u = (DA)† Dw, (17) centers at (−0.5, 0) in the xy-plane with a radius of 0.45 m
+i i
+and oscillates along the z-axis between 0.45 m and 0.95 m
+where i = 1, . . ., n, and (DA)† is the submatrix of (DA)† with a period of 14 seconds. Meanwhile, the desired yaw
+i
+composed of its (4i − 3)-th to 4i-th rows, associated with the angle increments with a period of 18 seconds. The trajectory
+i-th module. The “Motor Dynamics” in Fig. 7 refers to this tracking data are shown in Fig. 9a. The average error in
+operation. The controller is exponentially stable and its proof position is µ = 0.0043m, µ = −0.0045m, and µ = 0.0098m,
+x y z
+follows the same logic as in [4] by replacing WR S with WR F . and the standard deviation is σ x = 0.0398m, σ y = 0.0423m,
+σ = 0.0437m. The angular errors are µ = −0.4131◦, and
+z ψ
+VII. EVALUATION the standard deviation is σ ψ = 3.6729◦. The structure of one
+module has an attitude WR = SR(cid:62) during hovering, which
+We use real-robot experiments to evaluate the H-ModQuad S F
+shows that the F-frame is indeed tracking the desired attitude.
+design and validate control strategies by measuring the track-
+ing error to the desired trajectories. We design six different
+2A complete list of components and assembly instruction can be found at
+experiments, where a structure follows a specific trajectory1. https://docs-quad.readthedocs.io/en/latest/assemble/design.html; A picture of
+the T-module prototype can be found at Fig. 1 of the supplementary file.
+1Narrated experiment recordings and additional simulations with up to 3The modified Crazyflie-ROS framework source code is available on
+16 modules in the structure showing the scalability of the system can be GitHub at https://github.com/swarmslab/customized Crazyflie ros and the
+found at https://tinyurl.com/hmodquad-evaluation. The recorded rosbag files modified firmware at https://github.com/swarmslab/modquadfirmware/tree/
+are accessible at https://tinyurl.com/H-ModQuad-data HModQuad for the 2 × 2 structure in experiments 4, 5, and 6.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 9 =====
+19336 IEEE TRANSACTIONS ON AUTOMATION SCIENCE AND ENGINEERING, VOL. 22, 2025
+−5 degrees, which shows the independence of its translation
+on the x-axis and its pitch. The average position error is
+µ = −0.0818m, µ = −0.0059m, and µ = 0.0055m, and
+x y z
+the standard deviation is σ = 0.1227m, σ = 0.0979m, σ =
+x y z
+0.0322m. The angular errors are µ = 1.7718◦, µ = 1.3353◦,
+φ θ
+µ = 0.7125◦, and the standard deviation is σ = 1.2356◦,
+ψ φ
+σ = 0.6866◦, and σ = 1.4248◦. The structure has the highest
+θ ψ
+error along the x-axis despite the reference pitch angle, which
+is below 0.09 m. Along the y- and z-axes, the structure keeps
+the error below 0.06 m.
+3) Experiment 3 - Rectangle Tracking: We validate the
+control strategy for a fully-actuated structure. The structure is
+composed of four R-modules to track a 0.8 × 0.6 rectangular
+trajectory on the xy-plane of {W} without any tilt. We assemble
+the modules in the structure as a 2 × 2 square in the xy-plane
+of {S } and label the module in quadrants 2, 3, 4 and 1 of
+the xy-plane of {S } as module 1, 2, 3, and 4, respectively. In
+module 1, 3, 2, and 4, the rotors are tilting 30, −30 degrees
+in pitch, −30, and 30 degrees in roll, respectively. Thus,
+SR = SR(cid:62) = Rot (cid:0) y, π (cid:1) and SR = SR(cid:62) = Rot (cid:0) x, − π (cid:1) . The
+1 3 6 2 4 6
+F-frame aligns with {S } and SR = I . The trajectory tracking
+F 3
+data are shown in Fig. 9c. The average error in position is
+µ = 0.0039m, µ = −0.0028m, and µ = 0.0207m, and
+x y z
+the standard deviation is σ = 0.0898m, σ = 0.0783m,
+x y
+σ = 0.0158m. The angle error is µ = 0.0609◦, µ = 0.0306◦,
+z φ θ
+µ = 0.1411◦, and the standard deviation is σ = 0.4735◦,
+ψ φ
+σ = 0.3255◦, and σ = 0.6361◦. Along the y-axis, the
+θ ψ
+structure has the largest error, but below 0.15 m. Along the
+x- and z-axes, the structure keeps the error under 0.05 m.
+When the structure is tracking the trajectory, both roll and
+pitch angles remain 0 degrees, which shows the independence
+of translation and rotation.
+4) Experiment 4: In initial tests not included in this
+manuscript, we observed that the H-ModQuad configuration
+in Experiment 3 has very limited tilting capability due to
+unidirectional motor constraints. Commanding the structure to
+tilt as little as 5◦ often resulted in crashes, which motivated
+the design of a translation-only trajectory for Experiment 3 to
+demonstrate independent rotation and translation. Therefore,
+we assemble a structure composed of four T-modules, showing
+that the 6-ADoF structure can tilt without translation. The four
+T-modules are of two types, one with η = π and the other with
+4
+η = − π . The two types of T-modules are placed diagonally
+4
+as a 2 × 2 square in the xy-plane of {S }, as shown in Fig.
+8(c), and SR = I . We command the structure to track a
+Fig. 9. The state plots for trajectory tracking, in the order of x-, y-, z- F 3
+translation and roll-, pitch-, and yaw-orientation, respectively. The red dashed sinusoidal curve in pitch while hovering in place. The curve
+curves represent the desired and the blue represent the recorded trajectories. has a period of 90 seconds and a magnitude of 20◦. Because
+the structure is centrosymmetric, the capability to tilt in roll
+and pitch is equivalent. The trajectory tracking data are shown
+2) Experiment 2: We validate the dimensioning matrix by in Fig. 9d. The average error in position is µ = −0.0104m,
+x
+testing a structure with 5 ADoF, composed of two R-modules. µ = −0.0143m, and µ = −0.0555m, and the standard
+y z
+The structure follows a rectangular trajectory on the xy-plane deviation is σ = 0.2453m, σ = 0.0687m, σ = 0.1318m. The
+x y z
+of {W} with a length of 0.8 m and a width of 0.6 m. One angle error is µ = −0.3988◦, µ = −0.6541◦, µ = 0.3093◦,
+φ θ ψ
+module has all its rotors tilting 30 degrees in pitch and the and the standard deviation is σ = 1.8583◦, σ = 2.435◦, and
+φ θ
+other tilting −30 degrees, resulting in 5 ADoF. The resulted σ = 1.019◦. The structure keeps the position error below
+ψ
+F-frame aligns with {S }, thus SR = I . The structure tracks 0.3m and the rotation error under 2.5◦, changing roll while
+F 3
+the trajectory when its {S } remains a pitch angle of 0 and hovering. The position error is mainly caused by the mismatch
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 10 =====
+XU et al.: MODULAR MULTIROTORS: FROM QUADROTORS TO FULLY-ACTUATED AERIAL VEHICLES 19337
+of the prototype with the Motor Dynamics model, which is
+compensated by the controller.
+5) Experiment 5: Experiment 4 shows that the structure in
+Fig. 8(c) has a better tilting ability than that in Experiment 3.
+In order to find the maximum tilt angle of this structure with
+four T-modules, we design another experiment to manually
+increase the reference roll until the structure is unable to
+hover in place while tracking the tilt angle. The trajectory
+tracking data are shown in Fig. 9e. We observe that as the
+reference tilt angle increases, some rotors stop rotating due to
+saturation, as shown in Fig. 1. When the commanded rotor
+force is below a threshold, the linear increase of the thrust
+force to the PWM no longer holds, leading to a mismatch
+between the theoretical model and the physical system of the
+H-ModQuad. The average error in position is µ = 0.3389m,
+x
+µ = 0.0309m, and µ = −0.3451m, and its standard deviation
+y z
+is σ = 0.1898m, σ = 0.0941m, σ = 0.1659m. The angle
+x y z
+error is µ = 1.5495◦, µ = 0.3805◦, µ = −0.2988◦, and
+φ θ ψ
+their standard deviation is σ = 1.1736◦, σ = 0.971◦, and
+φ θ
+σ = 1.2678◦. Along the x-axis, the error reaches 0.8m when
+ψ
+the structure is approaching the maximum tilt. Based on this
+experiment, the robot achieves a maximum roll angle of 38.0◦,
+which aligns with the actuation polytope analysis.
+Fig. 10. The error statistics of the six experiments. The green T-string
+6) Experiment 6: In this experiment, we have a task similar
+entries are associated with the experiments using the structures of 4 and
+to that of Experiment 3 but using a structure composed of T- 5 ADoF, composed of R-modules. The blue entries are associated with the
+modules. The trajectory tracking data are shown in Fig. 9f. The orientation-tracking experiments using the structure of 6 ADoF, composed of
+4 T-modules. The red entries are associated with the performance comparison
+average error in position is µ = 0.0039m, µ = −0.0028m,
+x y between the fully-actuated structure composed of 4 R-modules (Exp 3) and
+and µ = 0.0207m, and its standard deviations σ = 0.0898m, the one of 4 T-modules (Exp 6).
+z x
+σ = 0.0783m, σ = 0.0158m. The angle error is µ = 0.0609◦,
+y z φ
+µ = 0.0306◦, µ = 0.1411◦, and their standard deviation σ =
+θ ψ φ
+0.4735◦, σ = 0.3255◦, and σ = 0.6361◦. The positional error 4 T -modules achieves significantly better position tracking
+θ ψ
+performance with a mean error of 0.1138m and standard
+is below 0.04 m along all axes, and the rotational error is below
+deviation of 0.0347m, over the mean error of 0.2134m and
+0.5 degrees along all axes. Combining Experiments 4 and 6,
+standard deviation of 0.06117m achieved in Experiment 3, as
+we show in full that this H-ModQuad of 4 T -modules is fully
+shown in the red T-string plots of Fig. 10a, highlighting the
+actuated and has control over 6 DOF.
+greater actuation capabilities brought by the newly introduced
+T-modules. However, we also notice an issue related to the
+C. Discussion
+model of the structure. In Experiments 4 and 5, the attitude
+The experiments with the R-modules show that the con-
+change affects the quality of position tracking, as shown in
+troller applies effectively despite the ADoF of the structure.
+Fig. 10a, especially on the z-axis. Despite the stability, position
+We note that although having 6 ADoF when assembling
+tracking drifts along all three axes as the tilt angle increases.
+four R-modules together, the structure in Experiment 3 loses
+The drift is due to the mismatch between the modeling and the
+stability during initial tests when attempting to track a varying
+physical prototype. In (3), we show that the design matrix A
+tilting angle independently from translation, which we opted
+depends on the positions of the motors, which is not directly
+not to include in the manuscript. The observation matches the
+measurable and has greater impact on a T-module. The thrust
+maximum tilt of the structure obtained from the force poly-
+of rotors applies directly at the position of the motor mounts in
+tope, which is 12◦. It also infers that the theoretical maximum
+our model, which is different from the actual force as a result
+force that the structure can generate in the horizontal plane is
+of the aerodynamic properties of the rotors. We mitigate this
+less than tan 12◦ ≈ 0.21 times that in the z-axis, which limits
+problem by applying an integral term in the controller.
+its translation. As shown in Fig. 10a, the structure experiences
+a large positional error, which is consistent with our analysis.
+The fully-actuated structure of T-modules in Experiment 4-
+VIII. CONCLUSION
+6 can push the tilt angle over 35◦ without losing stability, We present a modular UAV that can increase its strength
+as shown in the blue T-string plots in Fig. 10b, even if and ADoF from 4 to 5 and 6 with two torque-balanced
+some motors saturate, which is not achievable using the module designs, R- and T-module. The module configuration
+structure composed of only R-modules. This is highlighted determines the ADoF. We model the actuation capabilities
+in Experiment 5. Compared to Experiment 3 where the of the structures using the actuation ellipsoid and actuation
+structure composed of 4 R-modules are following the same polytope. The polytope is an analysis tool to check whether
+trajectory as in Experiment 6, the structure composed of a structure can satisfy certain tasks requirements such as
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 11 =====
+19338 IEEE TRANSACTIONS ON AUTOMATION SCIENCE AND ENGINEERING, VOL. 22, 2025
+hovering at a certain tilt angle. We use the actuation ellipsoid [21] S. Kalouche, “GOAT: A legged robot with 3D agility and virtual
+to find the best frame for a structure. compliance,” in Proc. IEEE/RSJ Int. Conf. Intell. Robots Syst. (IROS),
+Vancouver, BC, Canada, Sep. 2017, pp. 4110–4117.
+In future work, we would like to explore more configura-
+[22] M. Hamandi, F. Usai, Q. Sable´, N. Staub, M. Tognon, and A. Franchi,
+tions of H-ModQuad such as omnidirectionality. Also, since “Design of multirotor aerial vehicles: A taxonomy based on input
+different configurations satisfy different task requirements, allocation,” Int. J. Robot. Res., vol. 40, nos. 8–9, pp. 1015–1044, Aug.
+2021.
+we want to study systematic approaches to generate suitable
+[23] J. Xu, D. S. D’Antonio, and D. Saldan˜a, “H-ModQuad: Mod-
+designs given task requirements and available modules. ular multi-rotors with 4, 5, and 6 controllable DOF,” in Proc.
+IEEE Int. Conf. Robot. Autom. (ICRA), Shanxi, China, May 2021,
+pp. 190–196.
+REFERENCES
+[24] D. Brescianini and R. D’Andrea, “Design, modeling and control of an
+[1] H. Huang and A. V. Savkin, “Aerial surveillance in cities: When UAVs omni-directional aerial vehicle,” in Proc. IEEE Int. Conf. Robot. Autom.
+take public transportation vehicles,” IEEE Trans. Autom. Sci. Eng., (ICRA), Stockholm, Sweden, May 2016, pp. 3261–3266.
+vol. 20, no. 2, pp. 1069–1080, Apr. 2023. [25] M. Tognon and A. Franchi, “Omnidirectional aerial vehicles
+[2] Z. Pei, T. Fang, K. Weng, and W. Yi, “Urban on-demand delivery via with unidirectional thrusters: Theory, optimal design, and
+autonomous aerial mobility: Formulation and exact algorithm,” IEEE control,” IEEE Robot. Autom. Lett., vol. 3, no. 3, pp. 2277–2282,
+Trans. Autom. Sci. Eng., vol. 20, no. 3, pp. 1675–1689, Mar. 2022. Jul. 2018.
+[3] A. Zhu, T. Dai, G. Xu, P. Pauwels, B. de Vries, and M. Fang, “Deep [26] M. Hamandi, K. Sawant, M. Tognon, and A. Franchi, “Omni-plus-seven
+reinforcement learning for real-time assembly planning in robot-based (O7+): An omnidirectional aerial prototype with a minimal number
+prefabricated construction,” IEEE Trans. Autom. Sci. Eng., vol. 20, of unidirectional thrusters,” in Proc. Int. Conf. Unmanned Aircr. Syst.
+no. 3, pp. 1515–1526, Mar. 2023. (ICUAS), Athens, Greece, Sep. 2020, pp. 754–761.
+[4] T. Lee, M. Leok, and N. H. McClamroch, “Geometric tracking control [27] M. Ryll, H. H. Bu¨lthoff, and P. R. Giordano, “Modeling and control of a
+of a quadrotor UAV on SE(3),” in Proc. IEEE Conf. Decis. Control, quadrotor UAV with tilting propellers,” in Proc. IEEE Int. Conf. Robot.
+Atlanta, GA, USA, Dec. 2010, pp. 5420–5425. Autom., May 2012, pp. 4606–4613.
+[5] A. Alaimo, V. Artale, C. Milazzo, A. Ricciardello, and L. Trefiletti, [28] M. Ryll, D. Bicego, and A. Franchi, “Modeling and control of FAST-hex:
+“Mathematical modeling and control of a hexacopter,” in Proc. Int. A fully-actuated by synchronized-tilting hexarotor,” in Proc. IEEE/RSJ
+Conf. Unmanned Aircr. Syst. (ICUAS), Atlanta, GA, USA, May 2013, Int. Conf. Intell. Robots Syst. (IROS), Daejeon, South Korea, Oct. 2016,
+pp. 1043–1050. pp. 1689–1694.
+[6] D. Saldan˜a, B. Gabrich, G. Li, M. Yim, and V. Kumar, “ModQuad: The [29] G. Wang, X. Wang, and S. Li, “A guidance module based forma-
+flying modular structure that self-assembles in midair,” in Proc. IEEE tion control scheme for multi-mobile robot systems with collision
+Int. Conf. Robot. Autom. (ICRA), May 2018, pp. 691–698. avoidance,” IEEE Trans. Autom. Sci. Eng., vol. 21, no. 1, pp. 382–393,
+[7] S. Rajappa, M. Ryll, H. H. Bu¨lthoff, and A. Franchi, “Modeling, control Jan. 2024.
+and design optimization for a fully-actuated hexarotor aerial vehicle [30] T. Hayakawa, T. Kamimura, S. Kaji, and F. Matsuno, “Autonomous
+with tilted propellers,” in Proc. IEEE Int. Conf. Robot. Autom. (ICRA), distributed system for gait generation for single-legged modular robots
+Seattle, WA, USA, May 2015, pp. 4006–4013. connected in various configurations,” IEEE Trans. Robot., vol. 36, no. 5,
+[8] M. Zhao, T. Anzai, F. Shi, X. Chen, K. Okada, and M. Inaba, pp. 1491–1510, Oct. 2020.
+“Design, modeling, and control of an aerial robot DRAGON: A [31] L. Zhang, Y. Huang, Z. Cao, Y. Jiao, and H. Qian, “Parallel self-assembly
+dual-rotor-embedded multilink robot with the ability of multi-degree-of- for a multi-USV system on water surface with obstacles,” IEEE Trans.
+freedom aerial transformation,” IEEE Robot. Autom. Lett., vol. 3, no. 2, Autom. Sci. Eng., vol. 22, pp. 2213–2224, 2025.
+pp. 1176–1183, Apr. 2018. [32] H. Luo and T. L. Lam, “Auto-optimizing connection planning method
+[9] A. Franchi, R. Carli, D. Bicego, and M. Ryll, “Full-pose tracking control for chain-type modular self-reconfiguration robots,” IEEE Trans. Robot.,
+for aerial robotic systems with laterally bounded input force,” IEEE vol. 39, no. 2, pp. 1353–1372, Apr. 2023.
+Trans. Robot., vol. 34, no. 2, pp. 534–541, Apr. 2018. [33] R. Oung, F. Bourgault, M. Donovan, and R. D’Andrea, “The distributed
+[10] M. J. Duffy and A. Samaritano, “The LIFT! Project–modular, electric flight array,” in Proc. IEEE Int. Conf. Robot. Autom., Anchorage, AK,
+vertical lift system with ground power tether,” in Proc. 33rd AIAA Appl. USA, May 2010, pp. 601–607.
+Aerodynamics Conf., Dallas, TX, USA, Jun. 2015, p. 3013.
+[34] R. Oung and R. D’Andrea, “The distributed flight array: Design,
+[11] H. Yang, S. Park, J. Lee, J. Ahn, D. Son, and D. Lee, “LASDRA: implementation, and analysis of a modular vertical take-off and landing
+Large-size aerial skeleton system with distributed rotor actuation,” in
+vehicle,” Int. J. Robot. Res., vol. 33, no. 3, pp. 375–400, Mar. 2014,
+Proc. IEEE Int. Conf. Robot. Autom. (ICRA), Brisbane, QLD, Australia, doi: 10.1177/0278364913501212.
+May 2018, pp. 7017–7023.
+[35] K. Garanger, J. Epps, and E. Feron, “Modeling and experimental
+[12] M. Zhao et al., “Transformable multirotor with two-dimensional mul-
+validation of a fractal tetrahedron UAS assembly,” in Proc. IEEE Aerosp.
+tilinks: Modeling, control, and whole-body aerial manipulation,” Int.
+Conf., Big Sky, MT, USA, Mar. 2020, pp. 1–11.
+J. Robot. Res., vol. 37, no. 9, pp. 1085–1112, Aug. 2018.
+[36] J. Zhang et al., “Design and control of rapid in-air reconfiguration for
+[13] B. Gabrich, D. Saldan˜a, V. Kumar, and M. Yim, “A flying gripper based
+modular quadrotors with full controllable degrees of freedom,” IEEE
+on cuboid modular robots,” in Proc. IEEE Int. Conf. Robot. Autom.
+Robot. Autom. Lett., vol. 9, no. 8, pp. 6920–6927, Aug. 2024.
+(ICRA), Brisbane, QLD, Australia, May 2018, pp. 7024–7030.
+[37] Z. Wu et al., “Design, modeling and control of a composable and
+[14] K. Gilpin and D. Rus, “Modular robot systems,” IEEE Robot. Autom. extensible drone with tilting rotors,” in Proc. IEEE/RSJ Int. Conf. Intell.
+Mag., vol. 17, no. 3, pp. 38–55, Sep. 2010.
+Robots Syst. (IROS), Kyoto, Japan, Oct. 2022, pp. 12682–12689.
+[15] B. Huang, Y. Yang, Y.-Y. Tsai, and G.-Z. Yang, “A reconfigurable
+[38] B. Yu and T. Lee, “Modular reinforcement learning for a quadrotor UAV
+multirobot cooperation workcell for personalized manufacturing,” IEEE
+with decoupled yaw control,” IEEE Robot. Autom. Lett., vol. 10, no. 1,
+Trans. Autom. Sci. Eng., vol. 19, no. 3, pp. 2581–2590, Jul. 2022.
+pp. 572–579, Jan. 2025.
+[16] Q. Hu, E. Dong, and D. Sun, “Soft modular climbing robots,” IEEE
+[39] S. H. Derrouaoui, Y. Bouzid, and M. Guiatni, “Nonlinear robust control
+Trans. Robot., vol. 39, no. 1, pp. 399–416, Feb. 2023.
+of a new reconfigurable unmanned aerial vehicle,” Robotics, vol. 10,
+[17] Y. Zhang, Y. Koga, and D. Balkcom, “Interlocking block assembly with
+no. 2, p. 76, May 2021.
+robots,” IEEE Trans. Autom. Sci. Eng., vol. 18, no. 3, pp. 902–916, Jul.
+[40] J. Liu, C. Yang, X. Zhang, and Y. Li, “Distributed control of hetero-
+2021.
+geneous modular flight arrays under the limited space constraints,” in
+[18] C. Holda, B. Ghalamchi, and M. W. Mueller, “Tilting multicopter
+rotors for increased power efficiency and yaw authority,” in Proc. Int. Proc. IEEE 13th Data Driven Control Learn. Syst. Conf. (DDCLS), May
+2024, pp. 1773–1779.
+Conf. Unmanned Aircr. Syst. (ICUAS), Dallas, TX, USA, Jun. 2018,
+pp. 143–148. [41] R. M. Murray, Z. Li, and S. S. Sastry, A Mathematical Introduction to
+[19] M. Allenspach et al., “Design and optimal control of a tiltrotor micro- Robotic Manipulation. Boca Raton, FL, USA: CRC Press, 2017.
+aerial vehicle for efficient omnidirectional flight,” Int. J. Robot. Res., [42] R. Ortega and M. W. Spong, “Adaptive motion control of rigid robots:
+vol. 39, nos. 10–11, pp. 1305–1325, Sep. 2020. A tutorial,” in Proc. 27th IEEE Conf. Decis. Control, Austin, TX, USA,
+[20] M. Ryll et al., “6D physical interaction with a fully actuated aerial Dec. 1988, pp. 1575–1584.
+robot,” in Proc. IEEE Int. Conf. Robot. Autom. (ICRA), Marina Bay [43] T. Yoshikawa, “Manipulability of robotic mechanisms,” Int. J. Robot.
+Sands, Singapore, May 2017, pp. 5190–5195. Res., vol. 4, no. 2, pp. 3–9, Jun. 1985.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
+
+===== PAGE 12 =====
+XU et al.: MODULAR MULTIROTORS: FROM QUADROTORS TO FULLY-ACTUATED AERIAL VEHICLES 19339
+[44] P. Yu, Y. Su, M. J. Gerber, L. Ruan, and T.-C. Tsao, “An over- Diego S. D’Antonio (Member, IEEE) received the
+actuated multi-rotor aerial vehicle with unconstrained attitude angles M.Sc. degree in control engineering from the Univer-
+and high thrust efficiencies,” IEEE Robot. Autom. Lett., vol. 6, no. 4, sity of Ibagu, Colombia. He is currently pursuing the
+pp. 6828–6835, Oct. 2021. Ph.D. degree in computer science and engineering
+[45] S. Boyd, S. P. Boyd, and L. Vandenberghe, Convex Optimization. Los with Lehigh University, Bethlehem, PA, USA. From
+Angeles, CA, USA: Cambridge Univ. Press, 2004. 2012 to 2015, he was the Engineering and Innova-
+[46] J. Xu and D. Saldan˜a, “Finding optimal modular robots for aerial tasks,” tion Project Manager at Ideas Disruptivas, Mexico.
+in Proc. IEEE Int. Conf. Robot. Autom. (ICRA), London, U.K., May He is affiliated with the Swarms Laboratory and
+2023, pp. 11922–11928. the Autonomous and Intelligent Robotics Laboratory
+[47] W. Ho¨nig and N. Ayanian, Flying Multiple UAVs Using ROS. Los (AIRLab), Lehigh University. His current research
+Angeles, CA, USA: Springer, 2017. interests include multi-rotor systems, cooperative
+[48] M. W. Mueller, M. Hehn, and R. D’Andrea, “Covariance correction step flying robots, and aerial cable manipulation, with a particular emphasis on
+for Kalman filtering with an attitude,” J. Guid., Control, Dyn., vol. 40, using cables for object interaction and transportation. He was the Chair of
+no. 9, pp. 2301–2306, Sep. 2017. the IEEE Student Branch Chapter and the Industrial Application Society,
+University of Ibagu, from 2017 to 2019.
+David Salda n˜a received the B.Sc. and M.Sc.
+degrees in systems engineering from the Universidad
+Nacional de Colombia and the Ph.D. degree in
+computer science, artificial intelligence, and robotics
+Jiawei Xu (Member, IEEE) received the B.Sc. from the Federal University of Minas Gerais, Brazil,
+degree in electrical engineering and computer sys- in 2017.
+tems engineering from Rensselaer Polytechnic Insti- He was a Post-Doctoral Researcher at the GRASP
+tute in 2019. He is currently pursuing the Ph.D. Laboratory, University of Pennsylvania. He is cur-
+degree in computer science and engineering with rently an Assistant Professor of Computer Science
+Lehigh University, Bethlehem, PA, USA. He was a and Engineering and the Director of the Swarms
+Visiting Scholar at The University of New Mexico. Laboratory, Lehigh University. His work aims to
+He is a member of the Swarms Laboratory and develop resilient, adaptive robotic systems capable of operating in dynamic,
+the Autonomous and Intelligent Robotics Laboratory and unpredictable environments. His research interests include multi-robot
+(AIRLab), Lehigh University. His current research systems, swarm robotics, and aerial manipulation, with applications in envi-
+interests include multirotor aerial vehicles, modular ronmental monitoring, disaster response, and construction. His research has
+robots, aerial physical interactions, adaptive, optimal, and learning-based been recognized with support from the National Science Foundation and the
+control for aerial manipulation. Office of Naval Research, including the NSF CAREER Award.
+Authorized licensed use limited to: LEHIGH UNIVERSITY. Downloaded on June 18,2026 at 19:46:01 UTC from IEEE Xplore. Restrictions apply.
