@@ -1,0 +1,529 @@
+PRISMS WALL TOOL CONTROLLER DISCUSSION / HANDOFF
+Written: 2026-06-24
+
+Purpose
+-------
+This file is a handoff note for another Codex or researcher working on the
+wall-tool controller project. It records the current controller design,
+important tuning decisions, lessons from failed ideas, run commands, and the
+main research direction.
+
+The intended application is a wall-cleaning or facade-inspection tool for a
+large building/skyscraper. The system is a cable-supported drone/tool assembly:
+the reel controls cable payout velocity, while the drone modules control force
+and acceleration through their thrust axes. The main research interest is this
+mixed-input control problem:
+
+1. Reel/spool is best treated as a radial velocity/tension actuator.
+2. Drone modules are best treated as tangential acceleration/force actuators.
+3. The controller should use the cable efficiently, not ask the drones to do
+   everything.
+4. Smooth, fast, efficient motion matters more than forcing zero tilt.
+
+Current project location
+------------------------
+Root folder:
+  C:\Users\wts28\Documents\PHD\Projects\PRISMS\wall_tool_project
+
+Single run file:
+  run_wall_tool_controller.py
+
+Main controller package:
+  cable_hybrid_controller/
+
+Main simulator:
+  wall_tool_sim/wall_tool_ui.py
+
+Important files
+---------------
+run_wall_tool_controller.py
+  Single entry point. In PyCharm, right-click this file and run it.
+
+cable_hybrid_controller/controller.py
+  Chosen controller configuration. This is intentionally not a benchmark menu.
+  It exposes the current best controller stack.
+
+cable_hybrid_controller/miesc.py
+  Mixed-Input Energy-Shaping Controller (MIESC). This is the core controller
+  idea: radial cable/reel control plus tangential drone acceleration control,
+  with a control-Lyapunov-like swing-energy projection.
+
+cable_hybrid_controller/diagnostics.py
+  Writes CSV logs, summary.json, report.md, and diagnostic plots.
+
+cable_hybrid_controller/qt_eval_ui.py
+  Hybrid UI: Matplotlib scene rendering plus PyQtGraph real-time evaluation.
+
+cable_hybrid_controller/tk_ui.py
+  Tkinter fallback UI.
+
+cable_hybrid_controller/facade.py
+  Facade mission definition, cleaning targets, contact/work-region rules.
+
+wall_tool_sim/wall_tool_ui.py
+  Main 2.5D simulator, plant dynamics, reference governor, reel policy,
+  thrust allocation, contact model, and legacy Matplotlib UI.
+
+How to run
+----------
+From:
+  C:\Users\wts28\Documents\PHD\Projects\PRISMS
+
+Open the main hybrid UI:
+  .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py
+
+Equivalent explicit UI command:
+  .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode qt
+
+Run a short smoke test:
+  .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode quick --duration 8
+
+Run the full logged facade mission:
+  .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode log
+
+Other modes:
+  --mode tk   opens Tkinter fallback UI
+  --mode ui   opens legacy Matplotlib UI
+
+Current chosen controller
+-------------------------
+The current controller is MIESC: Mixed-Input Energy-Shaping Controller.
+
+High-level split:
+  - Reel velocity regulates radial cable length/tension geometry.
+  - Drone acceleration regulates tangential tracking and swing energy.
+  - A reference governor slows the path when tracking, cable geometry,
+    contact, thrust, or allocation risk is high.
+  - A thrust allocator maps desired tangential force, radial assist force,
+    and desired torque into the left/right drone thrusts.
+
+Current chosen config in cable_hybrid_controller/controller.py:
+  BEST_PLANNER = PLANNER_PREDICTIVE
+  WORK_PLANNER = PLANNER_DIRECT
+  BEST_PATH_SPEED = 0.30 m/s
+  COVERAGE_CORNER_SPEED = 0.075 m/s
+  MISSION_TRAJECTORY = "coverage-smooth"
+  control_law = "miesc"
+
+Current important parameters:
+  reference_accel_limit_mps2 = 0.40
+  reference_jerk_limit_mps3 = 2.1
+  reference_min_segment_duration_s = 0.65
+  reference_speed_min = 0.15
+  spool_accel_limit_mps2 = 0.38
+  miesc_spool_accel_limit_mps2 = 0.38
+  miesc_radial_frequency_rad_s = 1.35
+  miesc_radial_damping_ratio = 1.15
+  miesc_tangential_frequency_rad_s = 3.00
+  miesc_tangential_damping_ratio = 0.90
+  miesc_clf_decay_rate = 2.35
+
+Current facade mission:
+  wall_width_m = 6.0
+  wall_height_m = 6.0
+  work x range = [-2.1, 2.1] m
+  work z range = [1.1, 5.25] m
+  desired contact force = 0.55 N
+  wind is currently disabled for controller tuning
+
+MIESC details
+-------------
+The MIESC controller lives in cable_hybrid_controller/miesc.py and is called
+from WallToolSimulator.step().
+
+Radial part:
+  radial_error = target_length - measured_line_length
+  radial_velocity_error = target_length_dot - measured_line_velocity
+
+  radial_accel_cmd =
+      reference_radial_accel
+      + omega_r^2 * radial_error
+      + 2*zeta_r*omega_r * radial_velocity_error
+
+  The result is clipped by max_radial_accel.
+
+Tangential part:
+  theta_error = target_theta - measured_theta
+  theta_dot_error = target_theta_dot - measured_theta_dot
+  tangential_error = line_length * theta_error
+  tangential_velocity_error =
+      line_length * theta_dot_error + line_velocity * theta_error
+
+  nominal_tangential_accel =
+      reference_tangential_accel
+      + omega_t^2 * tangential_error
+      + 2*zeta_t*omega_t * tangential_velocity_error
+
+Swing energy:
+  The controller forms a storage/swing-energy function based on tangential
+  position and velocity error. It then projects/clips the tangential
+  acceleration so the command tends to dissipate swing energy instead of
+  adding energy during bad phases.
+
+This is one of the publishable ideas: the controller is not a generic PID.
+It uses the physical input split:
+  - radial/reel velocity for cable length and cable efficiency,
+  - tangential/drone acceleration for path tracking and anti-swing.
+
+Reference trajectory
+--------------------
+The facade mission uses "coverage-smooth":
+  simulator.set_corner_smooth_path(targets, corner_speed=COVERAGE_CORNER_SPEED)
+
+The path is a serpentine cleaning/inspection path over the facade. Corner
+velocities are generated so the tool does not stop at every lane end. Boundary
+logic prevents smoothing from pushing the path outside the work area.
+
+Important lesson: reducing the corner speed alone did not meaningfully fix the
+observed turn oscillation or jerk. The visible turn behavior is more coupled to
+body/cable dynamics and force allocation than to the path corner speed alone.
+
+Reference governor
+------------------
+The governor is a reference-speed governor, not a force controller. It does
+not directly command thrust or spool velocity. It decides how fast the
+reference path should be fed to MIESC.
+
+In each step:
+  trajectory.advance(dt * reference_speed_scale)
+
+Then the reference state is scaled:
+  reference velocity     *= reference_speed_scale
+  reference acceleration *= reference_speed_scale^2
+
+So if reference_speed_scale = 0.5, the controller tracks an easier, slower
+moving target.
+
+There are two governor layers:
+
+1. Main safety governor
+   Location: WallToolSimulator._update_reference_speed_scale()
+
+   It computes risk from:
+     - thrust risk:
+         if either drone nears max thrust
+     - allocation residual risk:
+         if desired force/torque cannot be produced well by the two modules
+     - tracking error risk:
+         if measured tool error grows beyond tracking_error_slowdown_m
+     - cable geometry risk:
+         if cable vertical efficiency is poor
+     - contact risk:
+         if contact force is too low/high or cleaning speed is too high
+
+   It uses the worst risk:
+     risk = max(thrust_risk, residual_risk, error_risk,
+                contact_risk, 0.75 * geometry_risk)
+
+   Then:
+     target_scale = 1.0 - (1.0 - reference_speed_min) * risk
+
+2. Contact-valid path governor
+   Location: WallToolSimulator._contact_valid_reference_governor_scale()
+
+   It further caps speed for facade work. It looks at:
+     - proximity to turns
+     - sharpness of the upcoming turn
+     - whether the turn is near the facade boundary
+     - cable geometry at the active target
+     - tracking ratio
+     - work-mode speed ratio
+
+   The final target scale is:
+     target_scale = min(main_safety_scale, contact_governor_scale)
+
+The governor output is filtered:
+  slowdown rate = reference_slowdown_rate = 2.5
+  recovery rate = reference_recovery_rate = 1.1
+
+So it slows down faster than it speeds back up.
+
+Current chosen governor parameters:
+  reference_speed_min = 0.15
+  contact_governor_turn_distance_m = 1.20
+  contact_governor_turn_min_scale = 0.18
+  contact_governor_geometry_efficiency = 0.62
+  contact_governor_geometry_min_scale = 0.28
+  contact_governor_tracking_ratio = 0.42
+  contact_governor_tracking_min_scale = 0.16
+  contact_governor_speed_ratio = 0.68
+  contact_governor_speed_min_scale = 0.30
+  thrust_slowdown_fraction = 0.82
+  residual_slowdown_fraction = 0.020
+
+Important interpretation:
+  The governor is the "do not ask impossible things" layer. If it is too
+  aggressive, the robot looks slow or hesitant. If it is too weak, the tool can
+  lose contact quality, saturate thrust, or excite oscillation.
+
+Cable tension and spool policy
+------------------------------
+The cable is modeled as a unilateral spring-damper with finite cable stiffness
+and damping. The controller asks for efficient cable tension rather than
+blindly maximizing tension.
+
+The spool command is velocity control. In MIESC mode:
+  WallToolSimulator._miesc_spool_velocity_policy()
+
+The spool command includes:
+  - line length error feedback
+  - line velocity feedback
+  - cable encoder error feedback
+  - radial acceleration feedforward
+  - tension feedback
+  - rate limiting by miesc_spool_accel_limit_mps2
+
+The goal is to keep the cable taut and useful while avoiding abrupt payout
+changes and excessive spool work.
+
+Drone force and allocation
+--------------------------
+After MIESC computes radial_accel_cmd and tangential_accel_cmd, the simulator
+computes:
+  desired_tangential_force
+  desired_radial_drone_force
+  desired_drone_force
+  desired_attitude_torque
+
+Then it solves a bounded allocation problem for left/right drone thrusts.
+The drone modules have tilted axes, so force and torque authority are coupled.
+
+Important practical point:
+  If we command too much attitude torque, it steals authority from translational
+  force tracking. This is why active force-based pre-tilt was rejected.
+
+Attitude control
+----------------
+There are two attitude regimes:
+
+1. Move mode
+   Current chosen behavior:
+     move_attitude_kp = 0.0
+     move_attitude_kd = 1.40
+     move_max_attitude_torque = 0.040
+     attitude_target = nominal_attitude_rad
+
+   Interpretation:
+     During motion, we do not force the drone to zero tilt with a strong
+     position servo. We mainly add passive damping to reduce oscillation.
+     This preserves thrust authority for translation and avoids fighting the
+     cable/drone geometry.
+
+2. Hold mode
+   Current behavior:
+     hold_attitude_kp = 35.0
+     hold_attitude_kd = 8.0
+     hold_max_attitude_torque = 0.06
+
+   Hold attitude target:
+     _hold_attitude_target(cable_axis)
+
+   Important:
+     Zero tilt is not required. The stable hold pose is allowed to hang under
+     the cable geometry. This was a key conceptual decision.
+
+Turn smoothness discussion
+--------------------------
+User observed that turns are not smooth when the drone needs to tilt the other
+way. This is a real issue.
+
+Tested idea:
+  Active force-based move attitude target, where body tilt was commanded from
+  the required drone force direction.
+
+Result:
+  Rejected. It made the body look lower-rate, but it caused the thrust
+  allocation residual to become active most of the mission and coverage dropped
+  badly. In one run coverage fell to about 0.357 because the governor slowed
+  down almost the whole time.
+
+Why it failed:
+  The system is underactuated/coupled. With two tilted thrust modules, forcing
+  attitude consumes the same actuator authority needed for tangential tracking.
+  A simple attitude pre-tilt target can fight the allocation.
+
+Accepted fix:
+  Increase passive move attitude damping:
+    move_attitude_kd: 0.8 -> 1.4
+
+This reduced body-rate oscillation without hurting coverage.
+
+Latest validated run
+--------------------
+Latest logged session:
+  cable_hybrid_controller/output/sessions/20260624_010216/
+
+Command:
+  .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode log
+
+Key metrics:
+  duration_s: 371.435
+  coverage_fraction: 1.000
+  contact_valid_fraction: 1.000
+  work_mode_contact_valid_fraction: 1.000
+  final_error_m: 0.00957
+  rms_error_m: 0.04940
+  max_error_m: 0.07402
+  p95_body_rate_rad_s: 0.16489
+  p99_body_rate_rad_s: 0.26958
+  p95_payload_jerk_m_s3: 21.054
+  mean_swing_energy_J: 0.0000171
+  mean_drone_power_ratio: 0.345
+  mean_cable_support_fraction: 0.699
+  max_thrust_fraction: 0.778
+  allocation_residual_active_fraction: 0.00452
+  slack_sample_fraction: 0.0
+  thrust_limit_active_fraction: 0.0
+  max_wind_force_N: 0.0
+
+Comparison to previous good run 20260624_001654:
+  p95 body rate improved: 0.206 -> 0.165 rad/s
+  p99 body rate improved: 0.361 -> 0.270 rad/s
+  coverage stayed: 1.000
+  contact valid stayed: 1.000
+  slack and thrust-limit activity stayed: 0
+  duration improved slightly: 373.53 -> 371.43 s
+
+Honest limitation:
+  Payload jerk did not improve. The accepted fix is mostly an attitude
+  oscillation improvement, not a complete smooth-force-reversal solution.
+
+UI status
+---------
+The preferred UI is currently the hybrid Qt UI:
+  cable_hybrid_controller/qt_eval_ui.py
+
+It uses:
+  - Matplotlib for the wall/tool scene
+  - PyQtGraph for fast real-time evaluation plots
+
+The user prefers not to use a web server. The user runs everything in PyCharm.
+
+UI features:
+  - click to command target
+  - Shift-click / append behavior
+  - hold mouse and draw a smooth path
+  - real-time plots for tracking, contact, thrust/cable support, energy, speed
+  - reference speed and governor cap plotted in diagnostics
+
+Tkinter fallback:
+  cable_hybrid_controller/tk_ui.py
+
+Diagnostics
+-----------
+Each logged run writes:
+  session_log.csv
+  segment_summary.csv
+  summary.json
+  report.md
+  diagnostic PNG plots
+
+Important logged signals:
+  tracking_error_m
+  measured_error_m
+  payload_speed_m_s
+  payload_acceleration_m_s2
+  body_attitude_rad
+  body_rate_rad_s
+  tension_N
+  desired_tension_N
+  spool_velocity_cmd_m_s
+  left_thrust_N / right_thrust_N
+  max_thrust_fraction
+  cable_support_fraction
+  drone_power_ratio
+  contact_force_N
+  contact_valid
+  reference_speed_scale
+  reference_governor_scale
+  radial_position_error_m
+  tangential_position_error_m
+  swing_energy_J
+  clf_margin_W
+
+What not to repeat
+------------------
+1. Do not force zero tilt during motion.
+   It is not necessary and can make the system less stable or less efficient.
+
+2. Do not add many ad-hoc damping/fix terms without a physical reason.
+   The user explicitly wants a mathematically defined, research-quality
+   controller, not a pile of patches.
+
+3. Do not use active force-based attitude pre-tilt unless the allocation is
+   redesigned at the same time.
+   Simple pre-tilt caused large allocation residual and poor progress.
+
+4. Do not assume corner speed alone fixes turn smoothness.
+   Sweeps of corner speed had little effect on the main jerk/body coupling.
+
+5. Do not focus on wind or cable bumping right now.
+   The current tuning scenario intentionally has wind disabled. The present
+   research focus is fast, smooth, efficient motion in nominal conditions.
+
+Research direction / next good ideas
+------------------------------------
+The current controller is good enough to be a baseline, but not yet the final
+publishable controller. Strong next directions:
+
+1. Allocation-aware attitude/force control
+   Instead of commanding attitude separately, solve one small QP that chooses:
+     left thrust, right thrust, cable tension/spool objective, and possibly
+     attitude torque
+   subject to actuator bounds and with costs on:
+     tracking force error,
+     torque/body-rate,
+     cable support efficiency,
+     thrust energy,
+     allocation residual.
+
+   This could make attitude smoothing real without stealing translational
+   authority.
+
+2. Turn-aware MPC / preview controller
+   Use upcoming path curvature and cable geometry to smoothly plan:
+     reference speed,
+     tangential acceleration,
+     spool velocity,
+     cable tension target.
+
+   This is likely better for the observed turn reversal problem than local
+   damping alone.
+
+3. Control barrier function governor
+   Replace or formalize the current heuristic reference governor with CBF-like
+   constraints for:
+     thrust limit,
+     contact validity,
+     cable tautness,
+     tracking error,
+     work-region boundary,
+     angular-rate limit.
+
+4. Energy-shaping with explicit jerk/turn penalty
+   The current MIESC handles swing energy but not directly payload jerk.
+   A publishable extension could add a smoothness objective or acceleration
+   preview while respecting the mixed reel/drone input split.
+
+5. Learn a residual model, not the whole controller
+   If learning is used, prefer model learning for residual dynamics:
+     cable stretch/friction,
+     thrust allocation residual,
+     contact normal dynamics.
+   Then use it inside MPC or the governor. Avoid black-box RL until the
+   model-based baseline is strong.
+
+Current conceptual summary
+--------------------------
+The controller should be described as:
+
+  A mixed-input energy-shaping controller with a reference-speed safety
+  governor for a cable-supported wall tool. Radial cable geometry is regulated
+  through reel velocity and tension management, while tangential tracking and
+  anti-swing behavior are regulated through drone acceleration. A governor
+  slows the reference when actuator, allocation, cable geometry, contact, or
+  tracking risk rises. During motion, attitude is damped but not forced to a
+  zero-tilt target, preserving thrust authority for translation.
+
+This is the current best controller direction.
+
