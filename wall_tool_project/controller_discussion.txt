@@ -256,6 +256,125 @@ Important interpretation:
   aggressive, the robot looks slow or hesitant. If it is too weak, the tool can
   lose contact quality, saturate thrust, or excite oscillation.
 
+Concern about the current governor
+----------------------------------
+The current governor is deterministic, but it is still heuristic. It uses
+hand-designed risk formulas such as:
+  - slow down when thrust fraction is high,
+  - slow down when tracking error is high,
+  - slow down near turns,
+  - slow down when cable geometry is poor,
+  - slow down when allocation residual is high.
+
+This works as an engineering safety layer, but it is not the cleanest research
+idea. The user specifically does not like that it feels heuristic. A better
+publishable direction is to replace this hand-tuned risk governor with a
+predictive reference governor or an MPC-style supervisor.
+
+Recommended next controller architecture:
+
+  State estimator, optional at first
+        -> predictive reference governor / MPC supervisor
+        -> MIESC low-level radial/tangential controller
+        -> thrust allocator and reel velocity command
+        -> plant/simulator
+
+The low-level MIESC controller should remain the inner controller. The
+predictive governor should sit above it and choose how fast the reference path
+is allowed to move.
+
+Predictive reference governor idea
+----------------------------------
+At every control step, instead of computing heuristic risk terms, the governor
+should predict the future for a short horizon, for example 1.5 to 3.0 seconds.
+It then chooses the fastest safe reference speed.
+
+Simple deterministic version:
+  1. Build candidate speed scales, for example:
+       1.00, 0.90, 0.80, 0.70, ..., reference_speed_min
+  2. For each candidate, simulate or roll out the plant/controller forward
+     over the prediction horizon.
+  3. Reject candidates that violate constraints.
+  4. Among feasible candidates, choose the fastest one.
+  5. Filter or rate-limit the chosen speed scale so it does not jump.
+
+Possible constraints:
+  - no cable slack
+  - thrust below actuator limit
+  - tension within safe range
+  - tracking error below facade-work limit
+  - contact force within valid cleaning range
+  - body angular rate below inspection/cleaning limit
+  - allocation residual below a small threshold
+  - cable vertical efficiency above a useful threshold
+  - payload speed below cleaning blur limit
+
+Possible objective:
+  maximize path progress
+  minimize tracking error
+  minimize drone power
+  minimize spool/reel work
+  minimize body rate
+  minimize payload acceleration/jerk
+  reward cable support fraction
+
+This would make the "governor" much less heuristic: it becomes a deterministic
+short-horizon constrained optimization or constrained search problem. It is a
+strong research direction because it directly addresses the mixed-input nature
+of the system: the reel and drones are not independent, so the supervisor must
+preview whether a future speed request is feasible for both.
+
+MPC supervisor idea
+-------------------
+A fuller version is MPC. Instead of only choosing one scalar reference speed,
+the MPC could choose a short horizon of:
+  - reference speed scale,
+  - tangential acceleration modifier,
+  - spool velocity/tension modifier,
+  - possibly cable tension target.
+
+The MPC objective could explicitly include:
+  - fast coverage,
+  - smooth turn reversals,
+  - cable efficiency,
+  - low drone power,
+  - low allocation residual,
+  - low body angular rate,
+  - valid contact.
+
+This is more powerful than a scalar predictive governor, but it is also harder
+to implement and tune. Recommended progression:
+  1. Keep MIESC as the inner controller.
+  2. Replace heuristic governor with predictive scalar reference governor.
+  3. If that works, extend to MPC-style multi-input supervision.
+
+Particle filter / estimator role
+--------------------------------
+A particle filter is primarily an estimator, not a controller. It should not be
+used as the main replacement for the governor. It becomes useful when the
+state is uncertain or partially hidden.
+
+Particle filter, EKF, or UKF could estimate:
+  - cable stretch and damping state,
+  - unmodeled cable friction,
+  - unknown wind force,
+  - wall normal/contact state,
+  - thrust effectiveness,
+  - slowly varying payload/tool parameters.
+
+Best future architecture with estimation:
+
+  Particle filter / EKF / UKF estimates hidden state and uncertainty
+        -> predictive governor or MPC chooses safe future motion
+        -> MIESC tracks radial/tangential commands
+        -> allocator commands drones and reel
+
+Recommendation:
+  Do predictive reference governor first. Add particle filtering later when
+  disturbance, contact uncertainty, wind, or model mismatch becomes the main
+  bottleneck. Do not start with black-box RL or particle filtering before the
+  deterministic predictive controller is strong.
+
 Cable tension and spool policy
 ------------------------------
 The cable is modeled as a unilateral spring-damper with finite cable stiffness
@@ -466,6 +585,12 @@ Research direction / next good ideas
 The current controller is good enough to be a baseline, but not yet the final
 publishable controller. Strong next directions:
 
+0. Replace the heuristic governor with a predictive reference governor
+   This is now the top recommended next step. The current governor is
+   deterministic but heuristic. A short-horizon predictive reference governor
+   would choose the fastest safe reference speed by rolling out future
+   constraints instead of using hand-tuned risk formulas.
+
 1. Allocation-aware attitude/force control
    Instead of commanding attitude separately, solve one small QP that chooses:
      left thrust, right thrust, cable tension/spool objective, and possibly
@@ -526,4 +651,3 @@ The controller should be described as:
   zero-tilt target, preserving thrust authority for translation.
 
 This is the current best controller direction.
-
