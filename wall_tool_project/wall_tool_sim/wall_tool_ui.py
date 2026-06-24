@@ -514,7 +514,6 @@ class SimParams:
     hold_attitude_kp: float = 35.0
     hold_attitude_kd: float = 8.0
     hold_max_attitude_torque: float = 0.06
-    hold_equilibrium_tilt_gain: float = 1.0
     hold_equilibrium_tilt_limit_rad: float = math.radians(58.0)
     attitude_hold_error_m: float = 0.06
     attitude_hold_speed_mps: float = 0.08
@@ -523,8 +522,10 @@ class SimParams:
     hold_position_kp: float = 12.0
     hold_position_kd: float = 6.0
     hold_max_position_accel: float = 2.8
-    hold_tension_residual_fraction: float = 0.05
     hold_tension_search_steps: int = 32
+    hold_attitude_search_steps: int = 12
+    hold_efficiency_residual_weight: float = 80.0
+    hold_efficiency_tilt_weight: float = 0.012
     rotational_damping: float = 0.010
     torque_residual_length_scale: float = 0.35
     hold_torque_residual_length_scale: float = 1.20
@@ -1401,6 +1402,9 @@ class WallToolSimulator:
         self.reference_speed_scale = 1.0
         self.reference_governor_scale = 1.0
         self.hold_latched = False
+        self._hold_equilibrium_cache: (
+            tuple[tuple[float, float, float], tuple[float, float, tuple[float, float], float]] | None
+        ) = None
         self.filtered_cable_tension_target = initial_tension
         self.actual_tension = initial_tension
         self.last_spool_velocity_cmd = 0.0
@@ -2093,66 +2097,102 @@ class WallToolSimulator:
         max_delta = max(0.0, accel_limit) * self.params.dt
         return clamp(raw_cmd, self.last_spool_velocity_cmd - max_delta, self.last_spool_velocity_cmd + max_delta)
 
-    def _hold_attitude_target(self, cable_axis: Vec2) -> float:
+    def _hold_static_allocation_cost(
+        self,
+        position: Vec2,
+        attitude: float,
+        tension: float,
+    ) -> tuple[float, float, tuple[float, float], Vec2]:
         params = self.params
-        cable_aligned_attitude = math.atan2(-cable_axis[0], cable_axis[1])
-        tilt_from_nominal = wrap_angle(cable_aligned_attitude - params.nominal_attitude_rad)
-        # The stable hold pose hangs the payload under the cable instead of
-        # forcing the top mount to chase the anchor line.
-        limited_tilt = clamp(
-            -params.hold_equilibrium_tilt_gain * tilt_from_nominal,
-            -params.hold_equilibrium_tilt_limit_rad,
-            params.hold_equilibrium_tilt_limit_rad,
-        )
-        return params.nominal_attitude_rad + limited_tilt
-
-    def _hold_equilibrium_attitude_for_position(self, position: Vec2) -> float:
-        attitude = self.params.nominal_attitude_rad
-        for _ in range(5):
-            mount = self._cable_mount_position(position, attitude)
-            cable_axis = normalize2((self.params.anchor[0] - mount[0], self.params.anchor[1] - mount[1]))
-            next_attitude = self._hold_attitude_target(cable_axis)
-            if abs(wrap_angle(next_attitude - attitude)) < 1e-5:
-                return next_attitude
-            attitude = next_attitude
-        return attitude
-
-    def _hold_feasible_cable_tension(self, reference: ReferenceState, requested_tension: float) -> float:
-        params = self.params
-        lower = params.min_tracking_tension
-        upper = clamp(requested_tension, lower, params.max_spool_tension)
-        if upper <= lower:
-            return lower
-
-        attitude = self._hold_equilibrium_attitude_for_position(reference.position)
-        mount = self._cable_mount_position(reference.position, attitude)
+        mount = self._cable_mount_position(position, attitude)
         cable_axis = normalize2((params.anchor[0] - mount[0], params.anchor[1] - mount[1]))
         left_axis, right_axis = self._drone_axes(attitude)
         cable_arm = self._cable_mount_offset(attitude)
         left_arm, right_arm = self._module_center_offsets(attitude)
-        torque_scale = max(params.torque_residual_length_scale, 1e-6)
-        residual_limit = params.hold_tension_residual_fraction * params.total_mass * params.gravity
+        torque_scale = max(params.hold_torque_residual_length_scale, 1e-6)
+        required_force = (
+            -tension * cable_axis[0],
+            params.total_mass * params.gravity - tension * cable_axis[1],
+        )
+        required_torque = -tension * cross2(cable_arm, cable_axis)
+        values, residual = self._solve_bounded_allocation(
+            required=(required_force[0], required_force[1], required_torque / torque_scale),
+            axes=(
+                (left_axis[0], left_axis[1], cross2(left_arm, left_axis) / torque_scale),
+                (right_axis[0], right_axis[1], cross2(right_arm, right_axis) / torque_scale),
+            ),
+            upper_bounds=(params.max_thrust_per_drone, params.max_thrust_per_drone),
+            effort_costs=(params.drone_thrust_cost, params.drone_thrust_cost),
+        )
 
-        best = lower
-        for index in range(params.hold_tension_search_steps + 1):
-            tension = lower + (upper - lower) * index / max(1, params.hold_tension_search_steps)
-            required_force = (
-                -tension * cable_axis[0],
-                params.total_mass * params.gravity - tension * cable_axis[1],
-            )
-            required_torque = -tension * cross2(cable_arm, cable_axis)
-            values, residual = self._solve_bounded_allocation(
-                required=(required_force[0], required_force[1], required_torque / torque_scale),
-                axes=(
-                    (left_axis[0], left_axis[1], cross2(left_arm, left_axis) / torque_scale),
-                    (right_axis[0], right_axis[1], cross2(right_arm, right_axis) / torque_scale),
-                ),
-                upper_bounds=(params.max_thrust_per_drone, params.max_thrust_per_drone),
-                effort_costs=(params.drone_thrust_cost, params.drone_thrust_cost),
-            )
-            if residual <= residual_limit and max(values) <= 0.96 * params.max_thrust_per_drone:
-                best = tension
-        return best
+        vertical_efficiency = max(0.0, cable_axis[1])
+        efficiency_floor = max(1e-3, params.min_cable_vertical_efficiency)
+        geometry_ratio = (1.0 - vertical_efficiency) / max(vertical_efficiency, efficiency_floor)
+        max_thrust = max(params.max_thrust_per_drone, 1e-9)
+        max_tension = max(params.max_spool_tension, 1e-9)
+        weight = max(params.total_mass * params.gravity, 1e-9)
+        tilt_ratio = wrap_angle(attitude - params.nominal_attitude_rad) / max(
+            params.hold_equilibrium_tilt_limit_rad,
+            1e-9,
+        )
+        residual_ratio = residual / weight
+        thrust_cost = params.drone_thrust_cost * (
+            (values[0] / max_thrust) * (values[0] / max_thrust)
+            + (values[1] / max_thrust) * (values[1] / max_thrust)
+        )
+        cable_cost = params.cable_tension_cost * (tension / max_tension) * (tension / max_tension) * (
+            1.0 + params.cable_geometry_cost * geometry_ratio * geometry_ratio
+        )
+        tilt_cost = params.hold_efficiency_tilt_weight * tilt_ratio * tilt_ratio
+        residual_cost = params.hold_efficiency_residual_weight * residual_ratio * residual_ratio
+        return residual_cost + thrust_cost + cable_cost + tilt_cost, residual, values, cable_axis
+
+    def _hold_optimal_static_equilibrium(
+        self,
+        position: Vec2,
+        tension_upper: float | None = None,
+    ) -> tuple[float, float, tuple[float, float], float]:
+        params = self.params
+        lower = params.min_tracking_tension
+        upper = clamp(
+            params.max_spool_tension if tension_upper is None else tension_upper,
+            lower,
+            params.max_spool_tension,
+        )
+        cache_key = (round(position[0], 3), round(position[1], 3), round(upper, 2))
+        if self._hold_equilibrium_cache is not None and self._hold_equilibrium_cache[0] == cache_key:
+            return self._hold_equilibrium_cache[1]
+
+        attitude_steps = max(1, params.hold_attitude_search_steps)
+        tension_steps = max(1, params.hold_tension_search_steps)
+        attitude_limit = params.hold_equilibrium_tilt_limit_rad
+        attitude_candidates = [
+            params.nominal_attitude_rad - attitude_limit + 2.0 * attitude_limit * index / attitude_steps
+            for index in range(attitude_steps + 1)
+        ]
+        attitude_candidates.append(self.measured_attitude)
+
+        best_cost = math.inf
+        best_result = (
+            params.nominal_attitude_rad,
+            lower,
+            (0.0, 0.0),
+            math.inf,
+        )
+        for attitude in attitude_candidates:
+            for index in range(tension_steps + 1):
+                tension = lower + (upper - lower) * index / tension_steps
+                cost, residual, values, _cable_axis = self._hold_static_allocation_cost(position, attitude, tension)
+                if cost < best_cost:
+                    best_cost = cost
+                    best_result = (attitude, tension, values, residual)
+
+        self._hold_equilibrium_cache = (cache_key, best_result)
+        return best_result
+
+    def _hold_equilibrium_attitude_for_position(self, position: Vec2, tension_upper: float | None = None) -> float:
+        attitude, _tension, _values, _residual = self._hold_optimal_static_equilibrium(position, tension_upper)
+        return attitude
 
     def _wind_force(self) -> Vec2:
         params = self.params
@@ -2408,10 +2448,11 @@ class WallToolSimulator:
             hold_mode=hold_position_ready,
         )
         if hold_position_ready:
-            raw_desired_cable_tension = min(
-                raw_desired_cable_tension,
-                self._hold_feasible_cable_tension(reference, raw_desired_cable_tension),
+            _hold_attitude, hold_tension, _hold_values, _hold_residual = self._hold_optimal_static_equilibrium(
+                reference.position,
+                params.max_spool_tension,
             )
+            raw_desired_cable_tension = hold_tension
         desired_cable_tension = self._filter_cable_tension_target(
             max(raw_desired_cable_tension, params.min_tracking_tension)
         )
@@ -2452,7 +2493,10 @@ class WallToolSimulator:
             attitude_kp = params.hold_attitude_kp
             attitude_kd = params.hold_attitude_kd
             max_attitude_torque = params.hold_max_attitude_torque
-            attitude_target = self._hold_attitude_target(control_cable_axis)
+            attitude_target = self._hold_equilibrium_attitude_for_position(
+                reference.position,
+                params.max_spool_tension,
+            )
         else:
             attitude_kp = params.move_attitude_kp
             attitude_kd = params.move_attitude_kd

@@ -12,7 +12,7 @@ import numpy as np
 
 try:
     import pyqtgraph as pg
-    from pyqtgraph.Qt import QtCore, QtWidgets
+    from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 except ModuleNotFoundError as exc:
     raise SystemExit(
         "Missing PyQtGraph/Qt packages. Install requirements first:\n"
@@ -40,9 +40,27 @@ from wall_tool_sim.wall_tool_ui import (
 pg.setConfigOptions(antialias=True, background="#fbfcfa", foreground="#18201c")
 
 
+def qt_ui_font(point_size: int = 9) -> QtGui.QFont:
+    for font_path in (
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+    ):
+        QtGui.QFontDatabase.addApplicationFont(font_path)
+    families = set(QtGui.QFontDatabase.families())
+    for family in ("Segoe UI", "Arial", "Tahoma"):
+        if family in families:
+            return QtGui.QFont(family, point_size)
+    return QtGui.QFont("Sans Serif", point_size)
+
+
 @dataclass
 class EvalSample:
     t: float
+    payload_x: float
+    payload_z: float
+    reference_x: float
+    reference_z: float
     tracking_ratio: float
     speed_ratio: float
     contact_valid: float
@@ -56,11 +74,18 @@ class EvalSample:
     spool_accel: float
     ref_scale: float
     gov_scale: float
+    left_thrust: float
+    right_thrust: float
+    desired_tension: float
+    measured_tension: float
 
 
 class QtEvalWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.setFont(qt_ui_font(9))
         self.setWindowTitle("PRISMS Wall Tool Controller")
         self.resize(1480, 900)
 
@@ -82,11 +107,15 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.last_scene_draw_time = 0.0
         self.eval_samples: list[EvalSample] = []
         self.speed_spin = QtWidgets.QDoubleSpinBox()
+        self.telemetry_labels: dict[str, QtWidgets.QLabel] = {}
 
         self._build_ui()
         self._build_scene()
         self._build_plots()
         self._connect_matplotlib_events()
+        self.update_metrics()
+        self.update_evaluation_plots()
+        self.update_scene()
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -128,29 +157,74 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         metrics.setHorizontalSpacing(6)
         metrics.setVerticalSpacing(6)
         self.metric_labels: dict[str, QtWidgets.QLabel] = {}
+        self.metric_captions: dict[str, QtWidgets.QLabel] = {}
         metric_specs = (
-            ("tracking", "Tracking"),
-            ("contact", "Contact"),
-            ("support", "Cable Support"),
-            ("speed", "Speed"),
-            ("power", "Drone Power"),
-            ("energy", "Swing Energy"),
+            ("tracking", "Tracking Error", "#111111"),
+            ("contact", "Task Valid", "#2f855a"),
+            ("support", "Cable Support", "#2f855a"),
+            ("speed", "Tool Speed", "#2563a8"),
+            ("power", "Drone Power", "#6b46c1"),
+            ("energy", "Swing Energy", "#c05621"),
         )
-        for index, (key, label) in enumerate(metric_specs):
+        for index, (key, label, color) in enumerate(metric_specs):
             box = QtWidgets.QFrame()
             box.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-            box.setStyleSheet("QFrame { background: #fbfcfa; border: 1px solid #d8ddd6; border-radius: 6px; }")
+            box.setMinimumHeight(58)
+            box.setStyleSheet(
+                "QFrame { background: #fbfcfa; border: 1px solid #d8ddd6; border-radius: 6px; }"
+            )
             box_layout = QtWidgets.QVBoxLayout(box)
             box_layout.setContentsMargins(8, 5, 8, 5)
             caption = QtWidgets.QLabel(label)
-            caption.setStyleSheet("color: #64706a; font-size: 11px;")
+            caption.setStyleSheet("border: 0; color: #64706a; font-size: 11px;")
             value = QtWidgets.QLabel("0")
-            value.setStyleSheet("font-family: Consolas; font-size: 16px; font-weight: 700;")
+            value.setStyleSheet(
+                f"border: 0; font-family: Consolas; font-size: 16px; font-weight: 700; color: {color};"
+            )
             box_layout.addWidget(caption)
             box_layout.addWidget(value)
             metrics.addWidget(box, index // 3, index % 3)
             self.metric_labels[key] = value
+            self.metric_captions[key] = caption
         right_layout.addLayout(metrics)
+
+        telemetry_box = QtWidgets.QFrame()
+        telemetry_box.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        telemetry_box.setStyleSheet("QFrame { background: #fbfcfa; border: 1px solid #d8ddd6; border-radius: 6px; }")
+        telemetry_layout = QtWidgets.QGridLayout(telemetry_box)
+        telemetry_layout.setContentsMargins(8, 5, 8, 5)
+        telemetry_layout.setHorizontalSpacing(8)
+        telemetry_layout.setVerticalSpacing(3)
+        telemetry_specs = (
+            ("Cable tension", "tension"),
+            ("Cable length", "cable_length"),
+            ("Cable angle", "cable_angle"),
+            ("Cable rate", "cable_rate"),
+            ("Reel velocity", "reel_velocity"),
+            ("IMU attitude", "imu_attitude"),
+            ("IMU rate", "imu_rate"),
+            ("Est pos", "est_pos"),
+            ("Est vel", "est_vel"),
+            ("True pos", "true_pos"),
+            ("Desired pos", "desired_pos"),
+            ("Ref velocity", "ref_velocity"),
+            ("Left input", "left_input"),
+            ("Right input", "right_input"),
+            ("Desired force", "desired_force"),
+            ("Governor", "governor"),
+        )
+        for index, (caption_text, key) in enumerate(telemetry_specs):
+            row = index // 2
+            col = 2 * (index % 2)
+            caption = QtWidgets.QLabel(caption_text)
+            caption.setStyleSheet("color: #64706a; font-size: 10px;")
+            value = QtWidgets.QLabel("--")
+            value.setMinimumWidth(130)
+            value.setStyleSheet("font-family: Consolas; color: #18201c; font-size: 11px; font-weight: 600;")
+            telemetry_layout.addWidget(caption, row, col)
+            telemetry_layout.addWidget(value, row, col + 1)
+            self.telemetry_labels[key] = value
+        right_layout.addWidget(telemetry_box)
 
         self.plot_layout = pg.GraphicsLayoutWidget()
         right_layout.addWidget(self.plot_layout, 1)
@@ -227,15 +301,30 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.ax.add_patch(self.spool)
         self.ax.text(params.anchor[0], params.anchor[1] + 0.13, "anchor + spool", ha="center", fontsize=9)
 
-        self.cable_line, = self.ax.plot([], [], color="#222222", linewidth=2.2, zorder=3)
-        self.trace_line, = self.ax.plot([], [], color="#2b7a78", linewidth=2.0, alpha=0.82, zorder=2)
-        self.reference_trace_line, = self.ax.plot([], [], color="#8a5b22", linewidth=1.4, linestyle=":", zorder=2)
-        self.pending_line, = self.ax.plot([], [], color="#777777", linewidth=1.3, linestyle="--", zorder=4)
-        self.draw_preview_line, = self.ax.plot([], [], color="#f39c12", linewidth=2.8, alpha=0.9, zorder=9)
-        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9)
-        self.target_point, = self.ax.plot([], [], marker="o", markerfacecolor="none", markeredgecolor="#8a5b22", markersize=8.0, mew=1.8, zorder=9)
-        self.tool_point, = self.ax.plot([], [], marker="o", color="#8a4f00", markersize=6.0, zorder=13)
-        self.structure_line, = self.ax.plot([], [], color="#111111", linewidth=2.4, alpha=0.70, zorder=7)
+        self.cable_line, = self.ax.plot([], [], color="#222222", linewidth=2.2, zorder=3, label="cable")
+        self.trace_line, = self.ax.plot([], [], color="#2b7a78", linewidth=2.0, alpha=0.82, zorder=2, label="tool trace")
+        self.reference_trace_line, = self.ax.plot([], [], color="#8a5b22", linewidth=1.4, linestyle=":", zorder=2, label="reference trace")
+        self.pending_line, = self.ax.plot([], [], color="#777777", linewidth=1.3, linestyle="--", zorder=4, label="pending path")
+        self.draw_preview_line, = self.ax.plot([], [], color="#f39c12", linewidth=2.8, alpha=0.9, zorder=9, label="drawn path")
+        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9, label="reference")
+        self.target_point, = self.ax.plot([], [], marker="o", markerfacecolor="none", markeredgecolor="#8a5b22", markersize=8.0, mew=1.8, zorder=9, label="target")
+        self.tool_point, = self.ax.plot([], [], marker="o", color="#8a4f00", markersize=6.0, zorder=13, label="tool")
+        self.structure_line, = self.ax.plot([], [], color="#111111", linewidth=2.4, alpha=0.70, zorder=7, label="drone assembly")
+        self.tool_label = self.ax.text(0.0, 0.0, "tool", color="#8a4f00", fontsize=8, zorder=14)
+        self.reference_label = self.ax.text(0.0, 0.0, "ref", color="#1f77b4", fontsize=8, zorder=14)
+        self.status_box = self.ax.text(
+            0.01,
+            0.99,
+            "",
+            transform=self.ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            family="Consolas",
+            color="#18201c",
+            bbox={"boxstyle": "round,pad=0.25", "facecolor": "#fbfcfa", "edgecolor": "#cfd6ce", "alpha": 0.92},
+            zorder=20,
+        )
 
         self.payload_artist = PayloadArtist(self.ax, params, 8)
         self.left_artist = ModuleArtist(self.ax, params.cage_radius, "#f7f7f7", "black", "", 0.16, 8)
@@ -246,6 +335,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.tension_arrow = FancyArrowPatch((0.0, 0.0), (0.0, 0.0), arrowstyle="-|>", mutation_scale=13, color="#6a3d9a", zorder=12)
         for arrow in (self.left_arrow, self.right_arrow, self.tension_arrow):
             self.ax.add_patch(arrow)
+        self.ax.legend(loc="lower right", fontsize=7, framealpha=0.92, ncol=2)
 
     def _build_plots(self) -> None:
         self.task_plot = self._make_plot("Task Validity", row=0)
@@ -253,30 +343,45 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.task_speed_curve = self.task_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="speed")
         self.task_valid_curve = self.task_plot.plot(pen=pg.mkPen("#2f855a", width=2, style=QtCore.Qt.PenStyle.DashLine), name="valid")
 
-        self.smooth_plot = self._make_plot("Smoothness And Energy", row=1)
-        self.body_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#c05621", width=2), name="body")
-        self.cable_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#718096", width=2), name="cable")
+        self.trajectory_plot = self._make_plot("Trajectory Real vs Desired", row=1, normalized=False)
+        self.payload_x_curve = self.trajectory_plot.plot(pen=pg.mkPen("#111111", width=2), name="real x")
+        self.reference_x_curve = self.trajectory_plot.plot(pen=pg.mkPen("#111111", width=1, style=QtCore.Qt.PenStyle.DashLine), name="des x")
+        self.payload_z_curve = self.trajectory_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="real z")
+        self.reference_z_curve = self.trajectory_plot.plot(pen=pg.mkPen("#2563a8", width=1, style=QtCore.Qt.PenStyle.DashLine), name="des z")
+
+        self.smooth_plot = self._make_plot("Smoothness And Energy", row=2)
+        self.body_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#c05621", width=2), name="body rate")
+        self.cable_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#718096", width=2), name="cable rate")
         self.energy_curve = self.smooth_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="energy")
 
-        self.act_plot = self._make_plot("Cable And Actuators", row=2)
+        self.input_plot = self._make_plot("Drone Inputs", row=3)
+        self.left_input_curve = self.input_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="left thrust")
+        self.right_input_curve = self.input_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="right thrust")
+
+        self.act_plot = self._make_plot("Cable And Actuators", row=4)
         self.support_curve = self.act_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="support")
         self.power_curve = self.act_plot.plot(pen=pg.mkPen("#6b46c1", width=2), name="power")
         self.thrust_curve = self.act_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="thrust")
 
-        self.reel_plot = self._make_plot("Reel And Governor", row=3)
+        self.reel_plot = self._make_plot("Reel And Governor", row=5)
         self.spool_curve = self.reel_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="spool")
+        self.spool_accel_curve = self.reel_plot.plot(pen=pg.mkPen("#c05621", width=2), name="reel accel")
         self.ref_curve = self.reel_plot.plot(pen=pg.mkPen("#4a5568", width=2), name="ref")
         self.gov_curve = self.reel_plot.plot(pen=pg.mkPen("#111111", width=2, style=QtCore.Qt.PenStyle.DotLine), name="gov")
 
-    def _make_plot(self, title: str, row: int) -> pg.PlotItem:
+    def _make_plot(self, title: str, row: int, normalized: bool = True) -> pg.PlotItem:
         plot = self.plot_layout.addPlot(row=row, col=0, title=title)
+        plot.addLegend(offset=(-8, 8), labelTextColor="#18201c")
         plot.showGrid(x=True, y=True, alpha=0.22)
-        plot.setYRange(-0.04, 1.2)
-        plot.addLine(y=1.0, pen=pg.mkPen("#d95f0e", width=1, style=QtCore.Qt.PenStyle.DashLine))
+        if normalized:
+            plot.setYRange(-0.04, 1.2)
+            plot.addLine(y=1.0, pen=pg.mkPen("#d95f0e", width=1, style=QtCore.Qt.PenStyle.DashLine))
         plot.getAxis("left").setWidth(42)
-        plot.setLabel("left", "ratio")
-        if row == 3:
-            plot.setLabel("bottom", "time", "s")
+        for axis_name in ("left", "bottom"):
+            plot.getAxis(axis_name).setTickFont(QtGui.QFont("Segoe UI", 8))
+        plot.setLabel("left", "normalized" if normalized else "m")
+        if row == 5:
+            plot.setLabel("bottom", "time before now", "s")
         else:
             plot.hideAxis("bottom")
         return plot
@@ -293,8 +398,15 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         speed = max(0.0, float(self.speed_spin.value()))
         if self.playing and speed > 0.0:
             steps = max(1, min(180, int(round(wall_dt * speed / max(self.sim.params.dt, 1e-9)))))
-            for _ in range(steps):
-                self.sim.step()
+            try:
+                for _ in range(steps):
+                    self.sim.step()
+            except RuntimeError as exc:
+                self.playing = False
+                self.play_button.setText("Play")
+                self.status_label.setStyleSheet("font-family: Consolas; color: #9b1c1c;")
+                self.status_label.setText(str(exc))
+                return
 
         self.update_metrics()
         self.update_evaluation_plots()
@@ -323,6 +435,27 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             f"t {state.t:6.1f}s   wp {state.active_waypoints:2d}   "
             f"ref {100.0 * state.reference_speed_scale:4.0f}%   error {state.tool_error:5.3f}m"
         )
+        self.status_label.setStyleSheet("font-family: Consolas; color: #4b5850;")
+        self.update_telemetry(state, speed)
+
+    def update_telemetry(self, state: SimState, speed: float) -> None:
+        labels = self.telemetry_labels
+        labels["tension"].setText(f"{state.measured_tension:5.2f} / {state.desired_cable_tension:5.2f} N")
+        labels["cable_length"].setText(f"{state.measured_cable_length:5.3f} m")
+        labels["cable_angle"].setText(f"{math.degrees(state.measured_theta):6.1f} deg")
+        labels["cable_rate"].setText(f"{state.measured_theta_dot:6.3f} rad/s")
+        labels["reel_velocity"].setText(f"{state.spool_velocity_cmd:6.3f} m/s")
+        labels["imu_attitude"].setText(f"{math.degrees(state.measured_attitude):6.1f} deg")
+        labels["imu_rate"].setText(f"{state.measured_angular_velocity:6.3f} rad/s")
+        labels["est_pos"].setText(f"({state.measured_payload[0]:+.2f}, {state.measured_payload[1]:+.2f})")
+        labels["est_vel"].setText(f"({state.estimated_payload_velocity[0]:+.2f}, {state.estimated_payload_velocity[1]:+.2f})")
+        labels["true_pos"].setText(f"({state.payload[0]:+.2f}, {state.payload[1]:+.2f})")
+        labels["desired_pos"].setText(f"({state.reference[0]:+.2f}, {state.reference[1]:+.2f})")
+        labels["ref_velocity"].setText(f"({state.reference_velocity[0]:+.2f}, {state.reference_velocity[1]:+.2f})")
+        labels["left_input"].setText(f"{state.left_thrust:5.3f} N")
+        labels["right_input"].setText(f"{state.right_thrust:5.3f} N")
+        labels["desired_force"].setText(f"({state.desired_drone_force[0]:+.2f}, {state.desired_drone_force[1]:+.2f}) N")
+        labels["governor"].setText(f"ref {100.0 * state.reference_speed_scale:4.0f}% / cap {100.0 * state.reference_governor_scale:4.0f}%")
 
     def update_scene(self) -> None:
         state = self.sim.history[-1]
@@ -365,6 +498,14 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.reference_point.set_data([state.reference[0]], [state.reference[1]])
         self.target_point.set_data([state.target[0]], [state.target[1]])
         self.tool_point.set_data([state.tool_head[0]], [state.tool_head[1]])
+        self.tool_label.set_position((state.tool_head[0] + 0.05, state.tool_head[1] + 0.05))
+        self.reference_label.set_position((state.reference[0] + 0.05, state.reference[1] + 0.05))
+        self.status_box.set_text(
+            f"tracking {state.tool_error:.3f} m\n"
+            f"contact {'valid' if state.contact_valid else ('invalid' if state.work_mode else 'off')}\n"
+            f"support {100.0 * state.cable_vertical_force / max(params.total_mass * params.gravity, 1e-9):.0f}%\n"
+            f"governor {100.0 * state.reference_speed_scale:.0f}%"
+        )
         self._update_force_arrows(state, left_center, right_center)
         self.canvas.draw_idle()
 
@@ -397,16 +538,30 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.task_error_curve.setData(x, [sample.tracking_ratio for sample in samples])
         self.task_speed_curve.setData(x, [sample.speed_ratio for sample in samples])
         self.task_valid_curve.setData(x, [sample.contact_valid for sample in samples])
+        self.payload_x_curve.setData(x, [sample.payload_x for sample in samples])
+        self.reference_x_curve.setData(x, [sample.reference_x for sample in samples])
+        self.payload_z_curve.setData(x, [sample.payload_z for sample in samples])
+        self.reference_z_curve.setData(x, [sample.reference_z for sample in samples])
         self.body_rate_curve.setData(x, [sample.body_rate_ratio for sample in samples])
         self.cable_rate_curve.setData(x, [sample.cable_rate_ratio for sample in samples])
         self.energy_curve.setData(x, [sample.energy_ratio for sample in samples])
+        self.left_input_curve.setData(x, [sample.left_thrust for sample in samples])
+        self.right_input_curve.setData(x, [sample.right_thrust for sample in samples])
         self.support_curve.setData(x, [sample.cable_support for sample in samples])
         self.power_curve.setData(x, [sample.drone_power for sample in samples])
         self.thrust_curve.setData(x, [sample.max_thrust for sample in samples])
         self.spool_curve.setData(x, [sample.spool_speed for sample in samples])
+        self.spool_accel_curve.setData(x, [sample.spool_accel for sample in samples])
         self.ref_curve.setData(x, [sample.ref_scale for sample in samples])
         self.gov_curve.setData(x, [sample.gov_scale for sample in samples])
-        for plot in (self.task_plot, self.smooth_plot, self.act_plot, self.reel_plot):
+        y_values = [sample.payload_x for sample in samples] + [sample.reference_x for sample in samples]
+        y_values += [sample.payload_z for sample in samples] + [sample.reference_z for sample in samples]
+        y_min = min(y_values)
+        y_max = max(y_values)
+        if y_max > y_min:
+            margin = max(0.05, 0.08 * (y_max - y_min))
+            self.trajectory_plot.setYRange(y_min - margin, y_max + margin, padding=0.0)
+        for plot in (self.task_plot, self.trajectory_plot, self.smooth_plot, self.input_plot, self.act_plot, self.reel_plot):
             plot.setXRange(max(-18.0, x[0]), 0.0, padding=0.0)
 
     def _append_eval_sample(self, state: SimState) -> None:
@@ -425,6 +580,10 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.eval_samples.append(
             EvalSample(
                 t=state.t,
+                payload_x=state.payload[0],
+                payload_z=state.payload[1],
+                reference_x=state.reference[0],
+                reference_z=state.reference[1],
                 tracking_ratio=state.tool_error / max(params.work_contact_tracking_limit_m, 1e-9),
                 speed_ratio=speed / max(params.work_contact_speed_limit_mps, 1e-9),
                 contact_valid=1.0 if state.contact_valid else 0.0,
@@ -438,6 +597,10 @@ class QtEvalWindow(QtWidgets.QMainWindow):
                 spool_accel=spool_accel,
                 ref_scale=state.reference_speed_scale,
                 gov_scale=state.reference_governor_scale,
+                left_thrust=state.left_thrust / max(params.max_thrust_per_drone, 1e-9),
+                right_thrust=state.right_thrust / max(params.max_thrust_per_drone, 1e-9),
+                desired_tension=state.desired_cable_tension / max(params.max_spool_tension, 1e-9),
+                measured_tension=state.measured_tension / max(params.max_spool_tension, 1e-9),
             )
         )
         if len(self.eval_samples) > 1200:

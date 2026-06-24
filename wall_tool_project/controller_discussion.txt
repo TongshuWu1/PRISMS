@@ -1,5 +1,6 @@
 PRISMS WALL TOOL CONTROLLER DISCUSSION / HANDOFF
 Written: 2026-06-24
+Last updated: 2026-06-24
 
 Purpose
 -------
@@ -23,7 +24,7 @@ mixed-input control problem:
 Current project location
 ------------------------
 Root folder:
-  C:\Users\wts28\Documents\PHD\Projects\PRISMS\wall_tool_project
+  C:\Users\wts28\Documents\PHD\PRISMS\wall_tool_project
 
 Single run file:
   run_wall_tool_controller.py
@@ -64,10 +65,40 @@ wall_tool_sim/wall_tool_ui.py
   Main 2.5D simulator, plant dynamics, reference governor, reel policy,
   thrust allocation, contact model, and legacy Matplotlib UI.
 
+Current state at last handoff
+-----------------------------
+The active controller is back to the pre-MPPI MIESC stack. The MPPI supervisor
+and rollout machinery were removed/reverted because the implementation became
+unstable, slow, and harder to reason about. Do not assume MPPI is currently
+used.
+
+What is currently active:
+  - MIESC radial/tangential controller.
+  - Deterministic reference-speed governor.
+  - Bounded left/right drone thrust allocation.
+  - Reel velocity/tension policy.
+  - Facade contact/work model.
+  - Improved Qt evaluation UI from the MPPI-era interface, but without any
+    MPPI-specific panels or rollout plotting.
+  - Efficient hold-position pose selection: when the tool has arrived and is
+    holding, the controller no longer tries to make the body upright. It
+    searches for a static hold pose and cable tension that reduce drone effort
+    while keeping the cable useful.
+
+Files changed in the current working tree:
+  - cable_hybrid_controller/qt_eval_ui.py
+      Preferred richer UI, no MPPI fields.
+  - wall_tool_sim/wall_tool_ui.py
+      Efficient hold-pose optimizer added to hold mode.
+
+Important current conclusion:
+  The current baseline is not an MPPI controller. It is MIESC plus a
+  deterministic governor and static hold-efficiency optimizer.
+
 How to run
 ----------
 From:
-  C:\Users\wts28\Documents\PHD\Projects\PRISMS
+  C:\Users\wts28\Documents\PHD\PRISMS
 
 Open the main hybrid UI:
   .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py
@@ -104,6 +135,12 @@ Current chosen config in cable_hybrid_controller/controller.py:
   COVERAGE_CORNER_SPEED = 0.075 m/s
   MISSION_TRAJECTORY = "coverage-smooth"
   control_law = "miesc"
+
+MPPI status:
+  MPPI is not part of the current active controller. The code should run in
+  PyCharm without requiring CUDA, PyTorch, rollouts, or a tensorized MPPI
+  kernel. If MPPI is revisited later, it should be redesigned separately as a
+  clean supervisor and not mixed into the current baseline.
 
 Current important parameters:
   reference_accel_limit_mps2 = 0.40
@@ -348,6 +385,41 @@ to implement and tune. Recommended progression:
   2. Replace heuristic governor with predictive scalar reference governor.
   3. If that works, extend to MPC-style multi-input supervision.
 
+MPPI attempt and current decision
+---------------------------------
+An MPPI-supervised MIESC implementation was attempted. The research idea was:
+  - keep MIESC as the inner dynamics-aware controller,
+  - let MPPI act as a residual/predictive supervisor,
+  - use GPU rollouts for performance,
+  - visualize the chosen rollout horizon in the UI.
+
+The implementation was reverted for now.
+
+Why it was removed:
+  - the GPU rollout backend was not cleanly implemented in this checkout,
+  - early behavior was less smooth and less stable than the MIESC baseline,
+  - the objective weights became over-complicated,
+  - async supervisor timing made it hard to know whether MPPI was actually
+    improving the motion,
+  - the user did not like the extra reference/target abstraction that made the
+    tool appear to chase a moving point instead of simply tracking the desired
+    path.
+
+Current decision:
+  Do not continue from the old MPPI code. If predictive control is revisited,
+  start from the clean MIESC baseline and design a simpler, more transparent
+  predictive governor or MPC supervisor with clear objectives:
+    hard constraints first,
+    tracking error and smoothness primary,
+    drone effort secondary,
+    cable usefulness rewarded only when it reduces total effort,
+    small regularization on reel motion, jerk, body rate, and residual action.
+
+UI decision from the MPPI period:
+  Keep the richer Qt evaluation UI, but remove MPPI-specific rollout/status
+  panels. The current UI should show sensors, trajectory real-vs-desired, and
+  left/right drone inputs.
+
 Particle filter / estimator role
 --------------------------------
 A particle filter is primarily an estimator, not a controller. It should not be
@@ -435,11 +507,48 @@ There are two attitude regimes:
      hold_max_attitude_torque = 0.06
 
    Hold attitude target:
-     _hold_attitude_target(cable_axis)
+     _hold_equilibrium_attitude_for_position(position, tension_upper)
+
+   The hold target is produced by:
+     _hold_optimal_static_equilibrium(position, tension_upper)
+
+   This static optimizer searches candidate body attitudes and cable tensions.
+   For each candidate, it computes the cable direction, cable torque, drone
+   thrust axes, and required left/right drone thrusts using the existing
+   bounded allocation solver. It then chooses the lowest-cost feasible static
+   hold solution.
+
+   The hold cost is ordered conceptually as:
+     1. small static wrench residual,
+     2. low left/right drone thrust effort,
+     3. useful but not excessive cable tension,
+     4. weak regularization against unnecessary tilt.
+
+   Current hold-search parameters in SimParams:
+     hold_tension_search_steps = 32
+     hold_attitude_search_steps = 12
+     hold_efficiency_residual_weight = 80.0
+     hold_efficiency_tilt_weight = 0.012
 
    Important:
-     Zero tilt is not required. The stable hold pose is allowed to hang under
-     the cable geometry. This was a key conceptual decision.
+     Zero tilt is not required. The stable hold pose is chosen for efficiency,
+     not for visual uprightness. If holding on the side of the wall, the body
+     is allowed to tilt toward a pose where the cable supports more load and
+     the drones do less work.
+
+   Example checked after the latest change:
+     target = (0.90, 1.50)
+     optimized hold target attitude approximately -29 deg
+     settled actual attitude approximately -21 deg
+     cable tension approximately 1.54 N
+     left/right thrust approximately 0.39 N / 0.00 N
+
+   Interpretation:
+     The actual settled pose can differ from the static target because the
+     cable spring, measured tension, allocator, and body dynamics settle into
+     the nearest feasible dynamic equilibrium. The important behavior is that
+     hold mode no longer drives the body back upright when uprightness is not
+     useful.
 
 Turn smoothness discussion
 --------------------------
@@ -522,11 +631,65 @@ UI features:
   - click to command target
   - Shift-click / append behavior
   - hold mouse and draw a smooth path
-  - real-time plots for tracking, contact, thrust/cable support, energy, speed
-  - reference speed and governor cap plotted in diagnostics
+  - labeled scene lines and status text
+  - telemetry panel for sensor/decoded data:
+      cable tension,
+      desired tension,
+      cable length,
+      cable angle,
+      measured attitude/IMU-like body data,
+      left/right thrust,
+      spool velocity,
+      contact force,
+      tracking error,
+      reference governor scale
+  - trajectory plot showing real tool position versus desired trajectory
+  - drone input plot showing left and right drone thrust histories
+  - no MPPI rollout panel and no MPPI status fields
 
 Tkinter fallback:
   cable_hybrid_controller/tk_ui.py
+
+Current smoke tests after latest update
+---------------------------------------
+Commands that passed:
+  .\.venv\Scripts\python.exe -m compileall wall_tool_project
+  .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode quick
+  Qt evaluation UI offscreen construction
+  git diff --check
+
+Latest quick check output:
+  Quick check duration [s]: 12.00
+  Tracking error [m]: 0.0168
+  Contact force [N]: 0.550
+  Contact valid: True
+  Normal gap [mm]: -3.4
+  Active waypoints: 0
+
+Hold-pose spot checks after latest update:
+  target (0.00, 1.50):
+    active_waypoints = 0
+    tool_error = 0.0209 m
+    attitude = 0.00 deg
+    left/right thrust = 0.096 / 0.096 N
+    tension = 1.560 N
+  target (0.90, 1.50):
+    active_waypoints = 0
+    tool_error = 0.0147 m
+    attitude = -20.63 deg
+    left/right thrust = 0.389 / 0.000 N
+    tension = 1.534 N
+  target (-0.90, 1.50):
+    active_waypoints = 0
+    tool_error = 0.0147 m
+    attitude = 20.63 deg
+    left/right thrust = 0.000 / 0.389 N
+    tension = 1.534 N
+
+Important:
+  These are smoke/behavior checks, not a full logged facade mission. The last
+  full logged facade mission is still the one listed in the "Latest validated
+  run" section below unless a new log run is performed.
 
 Diagnostics
 -----------
