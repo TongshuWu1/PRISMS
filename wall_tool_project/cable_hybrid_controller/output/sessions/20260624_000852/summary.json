@@ -1,0 +1,224 @@
+{
+  "scenario": "skyscraper_facade_cleaning",
+  "description": "Serpentine skyscraper facade cleaning/inspection pass with cable safety, 2.5D normal contact dynamics, and contact-gated coverage tracking.",
+  "planner": "predictive",
+  "facade_work_planner": "direct",
+  "controller_params": {
+    "wall_width_m": 6.0,
+    "wall_height_m": 6.0,
+    "max_cable_length_m": 7.0,
+    "mission_trajectory": "coverage-smooth",
+    "control_law": "miesc",
+    "path_speed_m_s": 0.3,
+    "reference_accel_limit_mps2": 0.4,
+    "reference_jerk_limit_mps3": 2.1,
+    "reference_min_segment_duration_s": 0.65,
+    "coverage_corner_speed_m_s": 0.075,
+    "max_spool_speed_m_s": 0.58,
+    "spool_accel_limit_mps2": 0.38,
+    "reference_speed_min": 0.24,
+    "tracking_error_slowdown_m": 0.075,
+    "tracking_error_full_slow_m": 0.16,
+    "contact_governor_enabled": true,
+    "contact_governor_turn_distance_m": 1.2,
+    "contact_governor_turn_min_scale": 0.22,
+    "contact_governor_geometry_efficiency": 0.38,
+    "contact_governor_geometry_min_scale": 0.58,
+    "contact_governor_tracking_ratio": 0.5,
+    "contact_governor_tracking_min_scale": 0.3,
+    "contact_governor_speed_ratio": 0.68,
+    "contact_governor_speed_min_scale": 0.3,
+    "max_thrust_per_drone_N": 1.4709975,
+    "hold_equilibrium_tilt_gain": 1.0,
+    "hold_cable_support_fraction": 0.72,
+    "pendulum_theta_kp": 10.0,
+    "pendulum_theta_kd": 8.0,
+    "max_pendulum_theta_ddot": 3.2,
+    "max_tangential_accel": 2.8,
+    "miesc_radial_frequency_rad_s": 1.35,
+    "miesc_radial_damping_ratio": 1.15,
+    "miesc_tangential_frequency_rad_s": 2.75,
+    "miesc_tangential_damping_ratio": 0.95,
+    "miesc_clf_decay_rate": 2.35,
+    "miesc_spool_accel_limit_mps2": 0.38,
+    "reference_slowdown_rate": 2.5,
+    "reference_recovery_rate": 1.1
+  },
+  "duration_s": 326.059999999776,
+  "max_duration_s": 430.0,
+  "targets": [
+    {
+      "x_m": -2.1,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 3.6199999999999997
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 3.6199999999999997
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.04
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.04
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.46
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.46
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.88
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.88
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 5.25
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 5.25
+    },
+    {
+      "x_m": 0.0,
+      "z_m": 2.0
+    }
+  ],
+  "sample_count": 65212,
+  "final_error_m": 0.008900181305109675,
+  "max_error_m": 0.1836650405193579,
+  "mean_error_m": 0.048613145285493924,
+  "rms_error_m": 0.05275308160660427,
+  "p95_error_m": 0.07010697379103117,
+  "mean_payload_speed_m_s": 0.1735082017466401,
+  "p95_payload_speed_m_s": 0.2896193726703991,
+  "max_payload_speed_m_s": 0.3288428850295793,
+  "mean_payload_acceleration_m_s2": 0.2134718590081622,
+  "p95_payload_acceleration_m_s2": 0.7225780859692215,
+  "max_payload_acceleration_m_s2": 1.18642159578277,
+  "p95_payload_jerk_m_s3": 21.65510111640427,
+  "max_payload_jerk_m_s3": 166.9863652856969,
+  "p95_tracking_error_ratio": 0.5842247815919265,
+  "p95_payload_speed_ratio": 0.8044982574177754,
+  "p95_body_rate_ratio": 0.125508019693637,
+  "p95_body_rate_rad_s": 0.1882620295404555,
+  "p99_body_rate_rad_s": 0.32252278515468336,
+  "p95_cable_rate_rad_s": 0.14175246327193494,
+  "p95_radial_error_m": 0.029988494498979223,
+  "p95_tangential_error_m": 0.011614013507341606,
+  "mean_swing_energy_J": 0.0002277736368755918,
+  "p95_swing_energy_J": 9.606620694546769e-05,
+  "max_swing_energy_J": 0.032173445074509095,
+  "p95_abs_swing_power_W": 0.00016847965413232683,
+  "clf_violation_fraction": 0.28629700055204566,
+  "mean_drone_power_ratio": 0.34036690911477663,
+  "max_drone_power_ratio": 0.9475363936700966,
+  "mean_cable_support_fraction": 0.7035293919326907,
+  "min_cable_support_fraction": 0.06796686524898067,
+  "mean_cable_vertical_efficiency": 0.8316956947902223,
+  "min_cable_vertical_efficiency": 0.2598423330738035,
+  "mean_tension_N": 1.3805276050775326,
+  "max_tension_N": 1.8713827508931407,
+  "max_thrust_fraction": 0.7985714229994781,
+  "mean_allocation_residual_N": 0.014882184795171921,
+  "max_allocation_residual_N": 0.10147754005448165,
+  "mean_abs_spool_velocity_m_s": 0.07768165915715733,
+  "p95_spool_acceleration_m_s2": 0.38000000000000256,
+  "max_spool_acceleration_m_s2": 0.38000000000000256,
+  "reel_in_work_J": 16.032932533350483,
+  "absolute_spool_work_proxy_J": 33.09896098301909,
+  "slack_sample_fraction": 0.0,
+  "tension_saturation_fraction": 0.0,
+  "thrust_limit_active_fraction": 0.0,
+  "allocation_residual_active_fraction": 0.0055817947617003,
+  "mean_wind_force_N": 0.0,
+  "max_wind_force_N": 0.0,
+  "mean_contact_force_N": 0.48757478720365105,
+  "max_contact_force_N": 0.9203093941304132,
+  "min_contact_force_N": 0.0,
+  "mean_contact_quality": 0.8867494276352904,
+  "contact_valid_fraction": 0.8807121388701465,
+  "invalid_contact_reason_fraction": {
+    "region": 0.0,
+    "contact_low": 0.1125,
+    "contact_high": 0.0,
+    "tracking": 0.9175,
+    "speed": 0.0,
+    "angular_rate": 0.0
+  },
+  "work_mode_fraction": 0.8867846408636447,
+  "mean_normal_gap_m": 0.008270995547491302,
+  "min_normal_gap_m": -0.0034735847958411166,
+  "max_normal_gap_m": 0.0999999999999999,
+  "mean_abs_normal_actuator_force_N": 0.4893555346989764,
+  "mean_blur_risk": 0.5067180161189916,
+  "max_blur_risk": 0.9595395780337943,
+  "min_facade_safety_margin": -0.7222857142857211,
+  "min_attitude_deg": -36.1081066376489,
+  "max_attitude_deg": 35.726994668014164,
+  "facade_mission": {
+    "x_min_m": -2.1,
+    "x_max_m": 2.1,
+    "z_min_m": 1.1,
+    "z_max_m": 5.25,
+    "tool_width_m": 0.34,
+    "desired_contact_force_N": 0.55
+  },
+  "coverage_fraction": 0.9614512471655329
+}

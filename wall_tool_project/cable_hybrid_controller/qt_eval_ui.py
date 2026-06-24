@@ -1,0 +1,562 @@
+#!/usr/bin/env python3
+"""Hybrid live UI: Matplotlib scene plus PyQtGraph evaluation plots."""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass
+from typing import Sequence
+
+import numpy as np
+
+try:
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtCore, QtWidgets
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Missing PyQtGraph/Qt packages. Install requirements first:\n"
+        "  python -m pip install -r requirements.txt"
+    ) from exc
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from matplotlib.patches import Circle, FancyArrowPatch, Polygon, Rectangle
+
+from cable_hybrid_controller.controller import BEST_PLANNER, command_controller, default_scenario, make_simulator
+from wall_tool_sim.wall_tool_ui import (
+    ModuleArtist,
+    PayloadArtist,
+    SimState,
+    Vec2,
+    add2,
+    distance2,
+    normalize2,
+    rotate2,
+    scale2,
+)
+
+
+pg.setConfigOptions(antialias=True, background="#fbfcfa", foreground="#18201c")
+
+
+@dataclass
+class EvalSample:
+    t: float
+    tracking_ratio: float
+    speed_ratio: float
+    contact_valid: float
+    body_rate_ratio: float
+    cable_rate_ratio: float
+    energy_ratio: float
+    cable_support: float
+    drone_power: float
+    max_thrust: float
+    spool_speed: float
+    spool_accel: float
+    ref_scale: float
+    gov_scale: float
+
+
+class QtEvalWindow(QtWidgets.QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("PRISMS Wall Tool Controller")
+        self.resize(1480, 900)
+
+        self.scenario = default_scenario()
+        self.sim = make_simulator()
+        command_controller(self.sim, self.scenario.targets)
+
+        self.playing = True
+        self.show_trace = True
+        self.show_path = True
+        self.show_forces = True
+        self.drawing = False
+        self.draw_points: list[Vec2] = []
+        self.draw_min_spacing_m = 0.055
+        self.draw_max_points = 48
+        self.drag_start: Vec2 | None = None
+        self.drag_started = False
+        self.last_wall_time = time.perf_counter()
+        self.last_scene_draw_time = 0.0
+        self.eval_samples: list[EvalSample] = []
+        self.speed_spin = QtWidgets.QDoubleSpinBox()
+
+        self._build_ui()
+        self._build_scene()
+        self._build_plots()
+        self._connect_matplotlib_events()
+
+        self.timer = QtCore.QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(16)
+
+    def _build_ui(self) -> None:
+        root = QtWidgets.QWidget()
+        self.setCentralWidget(root)
+        outer = QtWidgets.QVBoxLayout(root)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+
+        header = QtWidgets.QHBoxLayout()
+        title = QtWidgets.QLabel("PRISMS Wall Tool Controller")
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        self.status_label = QtWidgets.QLabel("starting")
+        self.status_label.setStyleSheet("font-family: Consolas; color: #4b5850;")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(self.status_label)
+        outer.addLayout(header)
+
+        main = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        main.setChildrenCollapsible(False)
+        outer.addWidget(main, 1)
+
+        self.fig = Figure(figsize=(8.2, 7.2), dpi=100)
+        self.canvas = FigureCanvas(self.fig)
+        main.addWidget(self.canvas)
+
+        right = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+        main.addWidget(right)
+        main.setSizes([900, 500])
+
+        metrics = QtWidgets.QGridLayout()
+        metrics.setHorizontalSpacing(6)
+        metrics.setVerticalSpacing(6)
+        self.metric_labels: dict[str, QtWidgets.QLabel] = {}
+        metric_specs = (
+            ("tracking", "Tracking"),
+            ("contact", "Contact"),
+            ("support", "Cable Support"),
+            ("speed", "Speed"),
+            ("power", "Drone Power"),
+            ("energy", "Swing Energy"),
+        )
+        for index, (key, label) in enumerate(metric_specs):
+            box = QtWidgets.QFrame()
+            box.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+            box.setStyleSheet("QFrame { background: #fbfcfa; border: 1px solid #d8ddd6; border-radius: 6px; }")
+            box_layout = QtWidgets.QVBoxLayout(box)
+            box_layout.setContentsMargins(8, 5, 8, 5)
+            caption = QtWidgets.QLabel(label)
+            caption.setStyleSheet("color: #64706a; font-size: 11px;")
+            value = QtWidgets.QLabel("0")
+            value.setStyleSheet("font-family: Consolas; font-size: 16px; font-weight: 700;")
+            box_layout.addWidget(caption)
+            box_layout.addWidget(value)
+            metrics.addWidget(box, index // 3, index % 3)
+            self.metric_labels[key] = value
+        right_layout.addLayout(metrics)
+
+        self.plot_layout = pg.GraphicsLayoutWidget()
+        right_layout.addWidget(self.plot_layout, 1)
+
+        toolbar = QtWidgets.QHBoxLayout()
+        self.play_button = QtWidgets.QPushButton("Pause")
+        self.play_button.clicked.connect(self.toggle_play)
+        self.reset_mission_button = QtWidgets.QPushButton("Reset Mission")
+        self.reset_mission_button.clicked.connect(self.reset_mission)
+        self.hold_button = QtWidgets.QPushButton("Hold Reset")
+        self.hold_button.clicked.connect(self.reset_hold)
+        self.clear_button = QtWidgets.QPushButton("Clear Path")
+        self.clear_button.clicked.connect(self.clear_path)
+        self.trace_button = QtWidgets.QPushButton("Trace On")
+        self.trace_button.clicked.connect(self.toggle_trace)
+        self.path_button = QtWidgets.QPushButton("Path On")
+        self.path_button.clicked.connect(self.toggle_path)
+        self.force_button = QtWidgets.QPushButton("Forces On")
+        self.force_button.clicked.connect(self.toggle_forces)
+        self.speed_spin.setRange(0.0, 8.0)
+        self.speed_spin.setSingleStep(0.25)
+        self.speed_spin.setValue(1.0)
+        self.speed_spin.setDecimals(2)
+        toolbar.addWidget(self.play_button)
+        toolbar.addWidget(self.reset_mission_button)
+        toolbar.addWidget(self.hold_button)
+        toolbar.addWidget(self.clear_button)
+        toolbar.addWidget(self.trace_button)
+        toolbar.addWidget(self.path_button)
+        toolbar.addWidget(self.force_button)
+        toolbar.addStretch(1)
+        toolbar.addWidget(QtWidgets.QLabel("sim speed"))
+        toolbar.addWidget(self.speed_spin)
+        outer.addLayout(toolbar)
+
+        hint = QtWidgets.QLabel("Click wall to target. Shift-click appends. Hold and drag to draw a smooth path.")
+        hint.setStyleSheet("color: #64706a;")
+        outer.addWidget(hint)
+
+    def _build_scene(self) -> None:
+        params = self.sim.params
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_aspect("equal", adjustable="box")
+        margin = 0.35
+        self.ax.set_xlim(-params.wall_width / 2.0 - margin, params.wall_width / 2.0 + margin)
+        self.ax.set_ylim(-0.10, params.wall_height + 0.35)
+        self.ax.set_xlabel("wall x [m]")
+        self.ax.set_ylabel("wall z [m]")
+        self.ax.grid(True, color="#d8d4c9", linewidth=0.8)
+        self.ax.set_facecolor("#f5f6f2")
+        self.fig.subplots_adjust(left=0.08, right=0.99, bottom=0.08, top=0.97)
+
+        self.wall_patch = Rectangle(
+            (-params.wall_width / 2.0, 0.0),
+            params.wall_width,
+            params.wall_height,
+            facecolor="#f3f1ea",
+            edgecolor="#6d6a62",
+            linewidth=2.0,
+        )
+        self.ax.add_patch(self.wall_patch)
+        self.work_region_patch = Rectangle(
+            (params.contact_work_x_min, params.contact_work_z_min),
+            params.contact_work_x_max - params.contact_work_x_min,
+            params.contact_work_z_max - params.contact_work_z_min,
+            facecolor="#ffffff",
+            edgecolor="#2f855a",
+            linewidth=1.8,
+            alpha=0.35,
+        )
+        self.ax.add_patch(self.work_region_patch)
+        self.ax.text(params.contact_work_x_min, params.contact_work_z_max + 0.06, "cleaning bay", color="#2f855a", fontsize=9)
+        self.spool = Circle(params.anchor, 0.075, facecolor="#444444", edgecolor="black", zorder=5)
+        self.ax.add_patch(self.spool)
+        self.ax.text(params.anchor[0], params.anchor[1] + 0.13, "anchor + spool", ha="center", fontsize=9)
+
+        self.cable_line, = self.ax.plot([], [], color="#222222", linewidth=2.2, zorder=3)
+        self.trace_line, = self.ax.plot([], [], color="#2b7a78", linewidth=2.0, alpha=0.82, zorder=2)
+        self.reference_trace_line, = self.ax.plot([], [], color="#8a5b22", linewidth=1.4, linestyle=":", zorder=2)
+        self.pending_line, = self.ax.plot([], [], color="#777777", linewidth=1.3, linestyle="--", zorder=4)
+        self.draw_preview_line, = self.ax.plot([], [], color="#f39c12", linewidth=2.8, alpha=0.9, zorder=9)
+        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9)
+        self.target_point, = self.ax.plot([], [], marker="o", markerfacecolor="none", markeredgecolor="#8a5b22", markersize=8.0, mew=1.8, zorder=9)
+        self.tool_point, = self.ax.plot([], [], marker="o", color="#8a4f00", markersize=6.0, zorder=13)
+        self.structure_line, = self.ax.plot([], [], color="#111111", linewidth=2.4, alpha=0.70, zorder=7)
+
+        self.payload_artist = PayloadArtist(self.ax, params, 8)
+        self.left_artist = ModuleArtist(self.ax, params.cage_radius, "#f7f7f7", "black", "", 0.16, 8)
+        self.right_artist = ModuleArtist(self.ax, params.cage_radius, "#f7f7f7", "black", "", 0.16, 8)
+
+        self.left_arrow = FancyArrowPatch((0.0, 0.0), (0.0, 0.0), arrowstyle="-|>", mutation_scale=13, color="#1f77b4", zorder=12)
+        self.right_arrow = FancyArrowPatch((0.0, 0.0), (0.0, 0.0), arrowstyle="-|>", mutation_scale=13, color="#1f77b4", zorder=12)
+        self.tension_arrow = FancyArrowPatch((0.0, 0.0), (0.0, 0.0), arrowstyle="-|>", mutation_scale=13, color="#6a3d9a", zorder=12)
+        for arrow in (self.left_arrow, self.right_arrow, self.tension_arrow):
+            self.ax.add_patch(arrow)
+
+    def _build_plots(self) -> None:
+        self.task_plot = self._make_plot("Task Validity", row=0)
+        self.task_error_curve = self.task_plot.plot(pen=pg.mkPen("#111111", width=2), name="tracking")
+        self.task_speed_curve = self.task_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="speed")
+        self.task_valid_curve = self.task_plot.plot(pen=pg.mkPen("#2f855a", width=2, style=QtCore.Qt.PenStyle.DashLine), name="valid")
+
+        self.smooth_plot = self._make_plot("Smoothness And Energy", row=1)
+        self.body_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#c05621", width=2), name="body")
+        self.cable_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#718096", width=2), name="cable")
+        self.energy_curve = self.smooth_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="energy")
+
+        self.act_plot = self._make_plot("Cable And Actuators", row=2)
+        self.support_curve = self.act_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="support")
+        self.power_curve = self.act_plot.plot(pen=pg.mkPen("#6b46c1", width=2), name="power")
+        self.thrust_curve = self.act_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="thrust")
+
+        self.reel_plot = self._make_plot("Reel And Governor", row=3)
+        self.spool_curve = self.reel_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="spool")
+        self.ref_curve = self.reel_plot.plot(pen=pg.mkPen("#4a5568", width=2), name="ref")
+        self.gov_curve = self.reel_plot.plot(pen=pg.mkPen("#111111", width=2, style=QtCore.Qt.PenStyle.DotLine), name="gov")
+
+    def _make_plot(self, title: str, row: int) -> pg.PlotItem:
+        plot = self.plot_layout.addPlot(row=row, col=0, title=title)
+        plot.showGrid(x=True, y=True, alpha=0.22)
+        plot.setYRange(-0.04, 1.2)
+        plot.addLine(y=1.0, pen=pg.mkPen("#d95f0e", width=1, style=QtCore.Qt.PenStyle.DashLine))
+        plot.getAxis("left").setWidth(42)
+        plot.setLabel("left", "ratio")
+        if row == 3:
+            plot.setLabel("bottom", "time", "s")
+        else:
+            plot.hideAxis("bottom")
+        return plot
+
+    def _connect_matplotlib_events(self) -> None:
+        self.canvas.mpl_connect("button_press_event", self.on_press)
+        self.canvas.mpl_connect("motion_notify_event", self.on_motion)
+        self.canvas.mpl_connect("button_release_event", self.on_release)
+
+    def _tick(self) -> None:
+        now = time.perf_counter()
+        wall_dt = min(0.08, max(0.0, now - self.last_wall_time))
+        self.last_wall_time = now
+        speed = max(0.0, float(self.speed_spin.value()))
+        if self.playing and speed > 0.0:
+            steps = max(1, min(180, int(round(wall_dt * speed / max(self.sim.params.dt, 1e-9)))))
+            for _ in range(steps):
+                self.sim.step()
+
+        self.update_metrics()
+        self.update_evaluation_plots()
+        if now - self.last_scene_draw_time >= 0.045:
+            self.update_scene()
+            self.last_scene_draw_time = now
+
+    def update_metrics(self) -> None:
+        state = self.sim.history[-1]
+        params = self.sim.params
+        weight = max(params.total_mass * params.gravity, 1e-9)
+        speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
+        no_cable_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
+        no_cable_power = max(2.0 * no_cable_each**1.5, 1e-9)
+        drone_power = (state.left_thrust**1.5 + state.right_thrust**1.5) / no_cable_power
+        support = state.cable_vertical_force / weight
+        contact = f"{state.contact_force:.2f} N" if state.contact_valid else ("bad" if state.work_mode else "off")
+        energy = f"{1000.0 * state.swing_energy_J:.3f} mJ" if state.swing_energy_J < 0.001 else f"{state.swing_energy_J:.4f} J"
+        self.metric_labels["tracking"].setText(f"{state.tool_error:.3f} m")
+        self.metric_labels["contact"].setText(contact)
+        self.metric_labels["support"].setText(f"{100.0 * support:.0f}%")
+        self.metric_labels["speed"].setText(f"{speed:.2f} m/s")
+        self.metric_labels["power"].setText(f"{100.0 * drone_power:.0f}%")
+        self.metric_labels["energy"].setText(energy)
+        self.status_label.setText(
+            f"t {state.t:6.1f}s   wp {state.active_waypoints:2d}   "
+            f"ref {100.0 * state.reference_speed_scale:4.0f}%   error {state.tool_error:5.3f}m"
+        )
+
+    def update_scene(self) -> None:
+        state = self.sim.history[-1]
+        params = self.sim.params
+        cable_mount = self.sim._cable_mount_position(state.payload, state.attitude)
+        self.cable_line.set_data([params.anchor[0], cable_mount[0]], [params.anchor[1], cable_mount[1]])
+        self.cable_line.set_linestyle("--" if state.cable_slack else "-")
+
+        if self.show_trace:
+            history = self.sim.history[-1600:]
+            stride = max(1, len(history) // 800)
+            samples = history[::stride]
+            self.trace_line.set_data([sample.tool_head[0] for sample in samples], [sample.tool_head[1] for sample in samples])
+            self.reference_trace_line.set_data([sample.reference[0] for sample in samples], [sample.reference[1] for sample in samples])
+        else:
+            self.trace_line.set_data([], [])
+            self.reference_trace_line.set_data([], [])
+
+        if self.show_path:
+            pending = self.sim.trajectory.pending_path()
+            stride = max(1, len(pending) // 800)
+            points = pending[::stride]
+            self.pending_line.set_data([point[0] for point in points], [point[1] for point in points])
+        else:
+            self.pending_line.set_data([], [])
+
+        if self.drawing and self.draw_points:
+            self.draw_preview_line.set_data([p[0] for p in self.draw_points], [p[1] for p in self.draw_points])
+        else:
+            self.draw_preview_line.set_data([], [])
+
+        left_center, right_center = self._module_centers(state)
+        self.structure_line.set_data(
+            [left_center[0], state.payload[0], right_center[0]],
+            [left_center[1], state.payload[1], right_center[1]],
+        )
+        self.payload_artist.update(state.payload, state.attitude)
+        self.left_artist.update(left_center, state.attitude)
+        self.right_artist.update(right_center, state.attitude)
+        self.reference_point.set_data([state.reference[0]], [state.reference[1]])
+        self.target_point.set_data([state.target[0]], [state.target[1]])
+        self.tool_point.set_data([state.tool_head[0]], [state.tool_head[1]])
+        self._update_force_arrows(state, left_center, right_center)
+        self.canvas.draw_idle()
+
+    def _module_centers(self, state: SimState) -> tuple[Vec2, Vec2]:
+        left_offset, right_offset = self.sim._module_center_offsets(state.attitude)
+        return add2(state.payload, left_offset), add2(state.payload, right_offset)
+
+    def _update_force_arrows(self, state: SimState, left_center: Vec2, right_center: Vec2) -> None:
+        params = self.sim.params
+        left_axis, right_axis = self.sim._drone_axes(state.attitude)
+        left_end = add2(left_center, scale2(left_axis, 0.05 + 0.26 * state.left_thrust / max(params.max_thrust_per_drone, 1e-9)))
+        right_end = add2(right_center, scale2(right_axis, 0.05 + 0.26 * state.right_thrust / max(params.max_thrust_per_drone, 1e-9)))
+        cable_dir = normalize2((params.anchor[0] - state.payload[0], params.anchor[1] - state.payload[1]))
+        tension_end = add2(state.payload, scale2(cable_dir, 0.24))
+        for arrow, start, end in (
+            (self.left_arrow, left_center, left_end),
+            (self.right_arrow, right_center, right_end),
+            (self.tension_arrow, state.payload, tension_end),
+        ):
+            arrow.set_positions(start, end)
+            arrow.set_visible(self.show_forces)
+
+    def update_evaluation_plots(self) -> None:
+        self._append_eval_sample(self.sim.history[-1])
+        samples = self.eval_samples[-900:]
+        if len(samples) < 2:
+            return
+        t = np.array([sample.t for sample in samples], dtype=float)
+        x = t - t[-1]
+        self.task_error_curve.setData(x, [sample.tracking_ratio for sample in samples])
+        self.task_speed_curve.setData(x, [sample.speed_ratio for sample in samples])
+        self.task_valid_curve.setData(x, [sample.contact_valid for sample in samples])
+        self.body_rate_curve.setData(x, [sample.body_rate_ratio for sample in samples])
+        self.cable_rate_curve.setData(x, [sample.cable_rate_ratio for sample in samples])
+        self.energy_curve.setData(x, [sample.energy_ratio for sample in samples])
+        self.support_curve.setData(x, [sample.cable_support for sample in samples])
+        self.power_curve.setData(x, [sample.drone_power for sample in samples])
+        self.thrust_curve.setData(x, [sample.max_thrust for sample in samples])
+        self.spool_curve.setData(x, [sample.spool_speed for sample in samples])
+        self.ref_curve.setData(x, [sample.ref_scale for sample in samples])
+        self.gov_curve.setData(x, [sample.gov_scale for sample in samples])
+        for plot in (self.task_plot, self.smooth_plot, self.act_plot, self.reel_plot):
+            plot.setXRange(max(-18.0, x[0]), 0.0, padding=0.0)
+
+    def _append_eval_sample(self, state: SimState) -> None:
+        params = self.sim.params
+        weight = max(params.total_mass * params.gravity, 1e-9)
+        speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
+        no_cable_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
+        no_cable_power = max(2.0 * no_cable_each**1.5, 1e-9)
+        spool_accel = 0.0
+        if self.eval_samples:
+            last_state = self.sim.history[-2] if len(self.sim.history) >= 2 else state
+            dt = max(state.t - last_state.t, 1e-9)
+            spool_accel = abs(state.spool_velocity_cmd - last_state.spool_velocity_cmd) / (
+                dt * max(params.miesc_spool_accel_limit_mps2, 1e-9)
+            )
+        self.eval_samples.append(
+            EvalSample(
+                t=state.t,
+                tracking_ratio=state.tool_error / max(params.work_contact_tracking_limit_m, 1e-9),
+                speed_ratio=speed / max(params.work_contact_speed_limit_mps, 1e-9),
+                contact_valid=1.0 if state.contact_valid else 0.0,
+                body_rate_ratio=abs(state.angular_velocity) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9),
+                cable_rate_ratio=abs(state.theta_dot) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9),
+                energy_ratio=state.swing_energy_J / max(params.miesc_energy_plot_limit_J, 1e-9),
+                cable_support=state.cable_vertical_force / weight,
+                drone_power=(state.left_thrust**1.5 + state.right_thrust**1.5) / no_cable_power,
+                max_thrust=max(state.left_thrust, state.right_thrust) / max(params.max_thrust_per_drone, 1e-9),
+                spool_speed=abs(state.spool_velocity_cmd) / max(params.max_spool_speed, 1e-9),
+                spool_accel=spool_accel,
+                ref_scale=state.reference_speed_scale,
+                gov_scale=state.reference_governor_scale,
+            )
+        )
+        if len(self.eval_samples) > 1200:
+            self.eval_samples = self.eval_samples[-900:]
+
+    def on_press(self, event) -> None:
+        if event.inaxes is not self.ax or event.xdata is None or event.ydata is None:
+            return
+        point = self.sim._clamp_wall_point((float(event.xdata), float(event.ydata)))
+        self.drawing = True
+        self.drag_started = False
+        self.drag_start = point
+        self.draw_points = [point]
+
+    def on_motion(self, event) -> None:
+        if not self.drawing or event.inaxes is not self.ax or event.xdata is None or event.ydata is None:
+            return
+        point = self.sim._clamp_wall_point((float(event.xdata), float(event.ydata)))
+        if self.drag_start is not None and distance2(point, self.drag_start) >= self.draw_min_spacing_m:
+            self.drag_started = True
+            self.playing = False
+            self.play_button.setText("Play")
+        if self.drag_started and self._append_draw_point(point):
+            self.update_scene()
+
+    def on_release(self, event) -> None:
+        if not self.drawing:
+            return
+        if event.inaxes is self.ax and event.xdata is not None and event.ydata is not None:
+            self._append_draw_point(self.sim._clamp_wall_point((float(event.xdata), float(event.ydata))))
+        points = self._simplify_draw_points(self.draw_points)
+        self.drawing = False
+        self.draw_points = []
+        if self.drag_started and len(points) >= 2 and self._path_length(points) >= 0.08:
+            self.sim.set_smooth_path(points)
+        elif self.drag_start is not None:
+            modifiers = QtWidgets.QApplication.keyboardModifiers()
+            append = bool(modifiers & QtCore.Qt.KeyboardModifier.ShiftModifier)
+            if append:
+                self.sim.append_target(self.drag_start, planner=BEST_PLANNER)
+            else:
+                self.sim.set_target(self.drag_start, planner=BEST_PLANNER)
+        self.playing = True
+        self.play_button.setText("Pause")
+        self.update_scene()
+
+    def _append_draw_point(self, point: Vec2) -> bool:
+        if not self.draw_points or distance2(point, self.draw_points[-1]) >= self.draw_min_spacing_m:
+            self.draw_points.append(point)
+            return True
+        return False
+
+    def _simplify_draw_points(self, points: Sequence[Vec2]) -> list[Vec2]:
+        if not points:
+            return []
+        filtered = [points[0]]
+        for point in points[1:]:
+            if distance2(point, filtered[-1]) >= self.draw_min_spacing_m:
+                filtered.append(point)
+        if distance2(points[-1], filtered[-1]) >= 1e-6:
+            filtered.append(points[-1])
+        if len(filtered) <= self.draw_max_points:
+            return filtered
+        keep: list[Vec2] = []
+        last_index = len(filtered) - 1
+        for sample_index in range(self.draw_max_points):
+            source_index = round(sample_index * last_index / max(1, self.draw_max_points - 1))
+            point = filtered[source_index]
+            if not keep or distance2(point, keep[-1]) >= 1e-6:
+                keep.append(point)
+        return keep
+
+    @staticmethod
+    def _path_length(points: Sequence[Vec2]) -> float:
+        return sum(distance2(points[index], points[index - 1]) for index in range(1, len(points)))
+
+    def toggle_play(self) -> None:
+        self.playing = not self.playing
+        self.play_button.setText("Pause" if self.playing else "Play")
+
+    def reset_mission(self) -> None:
+        self.sim = make_simulator()
+        command_controller(self.sim, self.scenario.targets)
+        self.eval_samples = []
+        self.playing = True
+        self.play_button.setText("Pause")
+        self.update_scene()
+
+    def reset_hold(self) -> None:
+        self.sim = make_simulator()
+        self.eval_samples = []
+        self.playing = False
+        self.play_button.setText("Play")
+        self.update_scene()
+
+    def clear_path(self) -> None:
+        self.sim.clear_trajectory()
+        self.draw_points = []
+        self.drawing = False
+        self.update_scene()
+
+    def toggle_trace(self) -> None:
+        self.show_trace = not self.show_trace
+        self.trace_button.setText("Trace On" if self.show_trace else "Trace Off")
+        self.update_scene()
+
+    def toggle_path(self) -> None:
+        self.show_path = not self.show_path
+        self.path_button.setText("Path On" if self.show_path else "Path Off")
+        self.update_scene()
+
+    def toggle_forces(self) -> None:
+        self.show_forces = not self.show_forces
+        self.force_button.setText("Forces On" if self.show_forces else "Forces Off")
+        self.update_scene()
+
+
+def run_qt_eval_ui() -> int:
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = QtEvalWindow()
+    window.show()
+    return int(app.exec())

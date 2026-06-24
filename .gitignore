@@ -4,5 +4,5 @@ __pycache__/
 *.tmp
 .venv/
 .idea/
-logs/*.csv
-coppeliasim_build/
+**/logs/*.csv
+**/coppeliasim_build/

@@ -1,0 +1,164 @@
+{
+  "scenario": "skyscraper_facade_cleaning",
+  "description": "Serpentine skyscraper facade cleaning/inspection pass with cable safety, 2.5D normal contact dynamics, and contact-gated coverage tracking.",
+  "planner": "predictive",
+  "facade_work_planner": "direct",
+  "controller_params": {
+    "mission_trajectory": "coverage-smooth",
+    "path_speed_m_s": 0.23,
+    "coverage_corner_speed_m_s": 0.03,
+    "max_spool_speed_m_s": 0.58,
+    "spool_accel_limit_mps2": 1.0,
+    "reference_speed_min": 0.32,
+    "tracking_error_slowdown_m": 0.075,
+    "tracking_error_full_slow_m": 0.16,
+    "max_thrust_per_drone_N": 1.4709975,
+    "hold_equilibrium_tilt_gain": 1.0,
+    "hold_cable_support_fraction": 0.72
+  },
+  "duration_s": 351.26499999975306,
+  "max_duration_s": 430.0,
+  "targets": [
+    {
+      "x_m": -2.1,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 3.6199999999999997
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 3.6199999999999997
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.04
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.04
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.46
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.46
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.88
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.88
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 5.25
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 5.25
+    },
+    {
+      "x_m": 0.0,
+      "z_m": 2.0
+    }
+  ],
+  "sample_count": 70253,
+  "final_error_m": 0.006157217196650668,
+  "max_error_m": 0.20978313331211973,
+  "mean_error_m": 0.0601015437935348,
+  "rms_error_m": 0.06929020901124516,
+  "mean_drone_power_ratio": 0.35731880950610556,
+  "max_drone_power_ratio": 0.9724745577413902,
+  "mean_cable_support_fraction": 0.6904648082649186,
+  "min_cable_support_fraction": 0.0730022349066982,
+  "mean_tension_N": 1.3696909476114087,
+  "max_tension_N": 1.8255631303084032,
+  "max_thrust_fraction": 0.8178194506354376,
+  "mean_allocation_residual_N": 0.013538897419411224,
+  "max_allocation_residual_N": 0.10911567515282192,
+  "mean_abs_spool_velocity_m_s": 0.07107611323435946,
+  "p95_spool_acceleration_m_s2": 1.0000000000000009,
+  "max_spool_acceleration_m_s2": 1.0000000000000009,
+  "reel_in_work_J": 15.948126741389194,
+  "absolute_spool_work_proxy_J": 33.11165277821022,
+  "slack_sample_fraction": 0.0,
+  "tension_saturation_fraction": 0.0,
+  "thrust_limit_active_fraction": 0.0,
+  "allocation_residual_active_fraction": 0.007302179266365849,
+  "mean_wind_force_N": 0.0,
+  "max_wind_force_N": 0.0,
+  "mean_contact_force_N": 0.5117600084686266,
+  "max_contact_force_N": 0.9203093941304137,
+  "min_contact_force_N": 0.0,
+  "mean_contact_quality": 0.9307676694370864,
+  "contact_valid_fraction": 0.9023529244302735,
+  "work_mode_fraction": 0.9308499281169488,
+  "mean_normal_gap_m": 0.003759821765982343,
+  "min_normal_gap_m": -0.0034735847958411166,
+  "max_normal_gap_m": 0.0999999999999999,
+  "mean_abs_normal_actuator_force_N": 0.5134522651077047,
+  "mean_blur_risk": 0.4647880862638987,
+  "max_blur_risk": 1.0,
+  "min_facade_safety_margin": -0.7222857143158611,
+  "min_attitude_deg": -38.32686694497925,
+  "max_attitude_deg": 35.814815546159835,
+  "facade_mission": {
+    "x_min_m": -2.1,
+    "x_max_m": 2.1,
+    "z_min_m": 1.1,
+    "z_max_m": 5.25,
+    "tool_width_m": 0.34,
+    "desired_contact_force_N": 0.55
+  },
+  "coverage_fraction": 0.9852607709750567
+}

@@ -1,0 +1,192 @@
+{
+  "scenario": "skyscraper_facade_cleaning",
+  "description": "Serpentine skyscraper facade cleaning/inspection pass with cable safety, 2.5D normal contact dynamics, and contact-gated coverage tracking.",
+  "planner": "predictive",
+  "facade_work_planner": "direct",
+  "controller_params": {
+    "wall_width_m": 6.0,
+    "wall_height_m": 6.0,
+    "max_cable_length_m": 7.0,
+    "mission_trajectory": "stop",
+    "path_speed_m_s": 0.27,
+    "coverage_corner_speed_m_s": 0.0,
+    "max_spool_speed_m_s": 0.58,
+    "spool_accel_limit_mps2": 1.0,
+    "reference_speed_min": 0.24,
+    "tracking_error_slowdown_m": 0.075,
+    "tracking_error_full_slow_m": 0.16,
+    "contact_governor_enabled": true,
+    "contact_governor_turn_distance_m": 1.2,
+    "contact_governor_turn_min_scale": 0.22,
+    "contact_governor_geometry_efficiency": 0.38,
+    "contact_governor_geometry_min_scale": 0.58,
+    "contact_governor_tracking_ratio": 0.54,
+    "contact_governor_speed_ratio": 0.72,
+    "contact_governor_speed_min_scale": 0.34,
+    "max_thrust_per_drone_N": 1.4709975,
+    "hold_equilibrium_tilt_gain": 1.0,
+    "hold_cable_support_fraction": 0.72
+  },
+  "duration_s": 356.22499999974855,
+  "max_duration_s": 430.0,
+  "targets": [
+    {
+      "x_m": -2.1,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 3.6199999999999997
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 3.6199999999999997
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.04
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.04
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.46
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.46
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 4.88
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 4.88
+    },
+    {
+      "x_m": -2.1,
+      "z_m": 5.25
+    },
+    {
+      "x_m": 2.1,
+      "z_m": 5.25
+    },
+    {
+      "x_m": 0.0,
+      "z_m": 2.0
+    }
+  ],
+  "sample_count": 71245,
+  "final_error_m": 0.004464891018734616,
+  "max_error_m": 0.1170998423260057,
+  "mean_error_m": 0.045688515041030844,
+  "rms_error_m": 0.048926265242446906,
+  "p95_error_m": 0.06616555299176585,
+  "mean_payload_speed_m_s": 0.15695096013096094,
+  "p95_payload_speed_m_s": 0.3058187159899439,
+  "max_payload_speed_m_s": 0.3563577956330485,
+  "p95_tracking_error_ratio": 0.5513796082647154,
+  "p95_payload_speed_ratio": 0.8494964333053998,
+  "p95_body_rate_ratio": 0.17775300153762652,
+  "mean_drone_power_ratio": 0.3393623610282357,
+  "max_drone_power_ratio": 0.997687452402541,
+  "mean_cable_support_fraction": 0.7026919116766607,
+  "min_cable_support_fraction": 0.06478606905266691,
+  "mean_cable_vertical_efficiency": 0.8327653210651859,
+  "min_cable_vertical_efficiency": 0.2855991265929628,
+  "mean_tension_N": 1.378071349412774,
+  "max_tension_N": 1.8210597464752019,
+  "max_thrust_fraction": 0.8289455412539967,
+  "mean_allocation_residual_N": 0.017598722100968994,
+  "max_allocation_residual_N": 0.1588755438979804,
+  "mean_abs_spool_velocity_m_s": 0.06994276770772842,
+  "p95_spool_acceleration_m_s2": 1.0000000000000009,
+  "max_spool_acceleration_m_s2": 1.0000000000000009,
+  "reel_in_work_J": 15.928578245460269,
+  "absolute_spool_work_proxy_J": 33.14945029660044,
+  "slack_sample_fraction": 0.0,
+  "tension_saturation_fraction": 0.0,
+  "thrust_limit_active_fraction": 0.0,
+  "allocation_residual_active_fraction": 0.048971857674222755,
+  "mean_wind_force_N": 0.0,
+  "max_wind_force_N": 0.0,
+  "mean_contact_force_N": 0.5499389269678162,
+  "max_contact_force_N": 0.9203093941304137,
+  "min_contact_force_N": 0.06942857142857144,
+  "mean_contact_quality": 0.999951118057564,
+  "contact_valid_fraction": 0.9997894589093972,
+  "invalid_contact_reason_fraction": {
+    "region": 0.0,
+    "contact_low": 1.0,
+    "contact_high": 0.0,
+    "tracking": 0.0,
+    "speed": 0.0,
+    "angular_rate": 0.0
+  },
+  "work_mode_fraction": 1.0,
+  "mean_normal_gap_m": -0.003391479621270903,
+  "min_normal_gap_m": -0.0034735847958411166,
+  "max_normal_gap_m": 0.09980714285714286,
+  "mean_abs_normal_actuator_force_N": 0.549977666528487,
+  "mean_blur_risk": 0.46270285809890044,
+  "max_blur_risk": 1.0,
+  "min_facade_safety_margin": -0.7222857142857142,
+  "min_attitude_deg": -36.326603577186525,
+  "max_attitude_deg": 36.03698584009402,
+  "facade_mission": {
+    "x_min_m": -2.1,
+    "x_max_m": 2.1,
+    "z_min_m": 1.1,
+    "z_max_m": 5.25,
+    "tool_width_m": 0.34,
+    "desired_contact_force_N": 0.55
+  },
+  "coverage_fraction": 1.0
+}

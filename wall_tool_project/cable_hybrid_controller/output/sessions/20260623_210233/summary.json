@@ -1,0 +1,124 @@
+{
+  "scenario": "skyscraper_facade_cleaning",
+  "description": "Serpentine skyscraper facade cleaning/inspection pass with cable safety, 2.5D normal contact dynamics, and contact-gated coverage tracking.",
+  "planner": "predictive",
+  "facade_work_planner": "direct",
+  "controller_params": {
+    "mission_trajectory": "coverage-smooth",
+    "path_speed_m_s": 0.23,
+    "coverage_corner_speed_m_s": 0.03,
+    "max_spool_speed_m_s": 0.58,
+    "spool_accel_limit_mps2": 1.0,
+    "reference_speed_min": 0.32,
+    "tracking_error_slowdown_m": 0.075,
+    "tracking_error_full_slow_m": 0.16,
+    "max_thrust_per_drone_N": 1.4709975,
+    "hold_equilibrium_tilt_gain": 1.0,
+    "hold_cable_support_fraction": 0.72
+  },
+  "duration_s": 149.37999999993664,
+  "max_duration_s": 430.0,
+  "targets": [
+    {
+      "x_m": -1.45,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": 0.0,
+      "z_m": 2.0
+    }
+  ],
+  "sample_count": 29876,
+  "final_error_m": 0.008958005937063541,
+  "max_error_m": 0.12901681279872823,
+  "mean_error_m": 0.05655286587146994,
+  "rms_error_m": 0.0637931605222589,
+  "mean_drone_power_ratio": 0.3425785764717247,
+  "max_drone_power_ratio": 0.8749839409179915,
+  "mean_cable_support_fraction": 0.70818634941028,
+  "min_cable_support_fraction": 0.17816396084983063,
+  "mean_tension_N": 1.4007555395513602,
+  "max_tension_N": 1.8292402900573375,
+  "max_thrust_fraction": 0.7736233195646331,
+  "mean_allocation_residual_N": 0.014883035419580196,
+  "max_allocation_residual_N": 0.08569111704297146,
+  "mean_abs_spool_velocity_m_s": 0.07122407073431125,
+  "p95_spool_acceleration_m_s2": 1.0000000000000009,
+  "max_spool_acceleration_m_s2": 1.0000000000000009,
+  "reel_in_work_J": 6.925151408927201,
+  "absolute_spool_work_proxy_J": 14.51054933982463,
+  "slack_sample_fraction": 0.0,
+  "tension_saturation_fraction": 0.0,
+  "thrust_limit_active_fraction": 0.0,
+  "allocation_residual_active_fraction": 0.005891016200294551,
+  "mean_wind_force_N": 0.0,
+  "max_wind_force_N": 0.0,
+  "mean_contact_force_N": 0.5498543597476921,
+  "max_contact_force_N": 0.9203093941304137,
+  "min_contact_force_N": 0.06942857142857144,
+  "mean_contact_quality": 0.99988343171814,
+  "contact_valid_fraction": 0.9604699424287053,
+  "work_mode_fraction": 1.0,
+  "mean_normal_gap_m": -0.003327755660645514,
+  "min_normal_gap_m": -0.0034735847958411166,
+  "max_normal_gap_m": 0.09980714285714286,
+  "mean_abs_normal_actuator_force_N": 0.5499467415926513,
+  "mean_blur_risk": 0.4492799772914599,
+  "max_blur_risk": 1.0,
+  "min_facade_safety_margin": -0.7222857142857142,
+  "min_attitude_deg": -35.543267437562136,
+  "max_attitude_deg": 35.846817796952415,
+  "facade_mission": {
+    "x_min_m": -1.45,
+    "x_max_m": 1.45,
+    "z_min_m": 1.1,
+    "z_max_m": 3.45,
+    "tool_width_m": 0.34,
+    "desired_contact_force_N": 0.55
+  },
+  "coverage_fraction": 1.0
+}

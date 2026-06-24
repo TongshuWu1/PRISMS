@@ -1,0 +1,4 @@
+matplotlib>=3.8
+numpy>=1.25
+pyqtgraph>=0.14
+PySide6>=6.11

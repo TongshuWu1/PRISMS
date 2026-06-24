@@ -1,0 +1,115 @@
+{
+  "scenario": "skyscraper_facade_cleaning",
+  "description": "Serpentine skyscraper facade cleaning/inspection pass with wind, cable safety, 2.5D normal contact dynamics, and contact-gated coverage tracking.",
+  "planner": "predictive",
+  "facade_work_planner": "direct",
+  "controller_params": {
+    "path_speed_m_s": 0.18,
+    "max_spool_speed_m_s": 0.58,
+    "max_thrust_per_drone_N": 1.4709975,
+    "hold_equilibrium_tilt_gain": 1.0,
+    "hold_cable_support_fraction": 0.72
+  },
+  "duration_s": 392.94999999971515,
+  "max_duration_s": 430.0,
+  "targets": [
+    {
+      "x_m": -1.45,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 1.1
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 1.52
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 1.94
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 2.36
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 2.78
+    },
+    {
+      "x_m": 1.45,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": -1.45,
+      "z_m": 3.1999999999999997
+    },
+    {
+      "x_m": 0.0,
+      "z_m": 2.0
+    }
+  ],
+  "sample_count": 78590,
+  "final_error_m": 0.036586660044519,
+  "max_error_m": 0.14538077237218275,
+  "mean_error_m": 0.06315597950366192,
+  "rms_error_m": 0.07056551442222074,
+  "mean_drone_power_ratio": 0.4071298951623601,
+  "max_drone_power_ratio": 0.9238209852899495,
+  "mean_cable_support_fraction": 0.6139026814414812,
+  "min_cable_support_fraction": 0.02380626983893345,
+  "mean_tension_N": 1.2363588697759398,
+  "max_tension_N": 3.761884895396496,
+  "max_thrust_fraction": 1.0,
+  "mean_allocation_residual_N": 0.0603355148234733,
+  "max_allocation_residual_N": 0.27184987777664776,
+  "reel_in_work_J": 243.07551931566456,
+  "absolute_spool_work_proxy_J": 253.7515942613066,
+  "slack_sample_fraction": 0.0,
+  "tension_saturation_fraction": 0.0,
+  "thrust_limit_active_fraction": 0.00020358824277897953,
+  "allocation_residual_active_fraction": 0.5547397887771981,
+  "mean_wind_force_N": 0.038807573910979914,
+  "max_wind_force_N": 0.09930873494756194,
+  "mean_contact_force_N": 0.539471898113799,
+  "max_contact_force_N": 0.9120192008002519,
+  "min_contact_force_N": 0.0683266935780981,
+  "mean_contact_quality": 0.9999507546964166,
+  "contact_valid_fraction": 0.9456673877083599,
+  "work_mode_fraction": 1.0,
+  "mean_normal_gap_m": -0.003329935019357683,
+  "min_normal_gap_m": -0.0034726710142813783,
+  "max_normal_gap_m": 0.09981020362894974,
+  "mean_abs_normal_actuator_force_N": 0.5545760685162695,
+  "mean_blur_risk": 0.1940687426614877,
+  "max_blur_risk": 0.7559101380668961,
+  "min_facade_safety_margin": -0.7266932256876075,
+  "min_attitude_deg": -32.97563263008899,
+  "max_attitude_deg": 35.79933368426926,
+  "facade_mission": {
+    "x_min_m": -1.45,
+    "x_max_m": 1.45,
+    "z_min_m": 1.1,
+    "z_max_m": 3.45,
+    "tool_width_m": 0.34,
+    "desired_contact_force_N": 0.55
+  },
+  "coverage_fraction": 1.0
+}
