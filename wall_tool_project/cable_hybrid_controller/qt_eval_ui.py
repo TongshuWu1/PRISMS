@@ -61,21 +61,19 @@ class EvalSample:
     payload_z: float
     reference_x: float
     reference_z: float
-    tracking_ratio: float
-    speed_ratio: float
-    contact_valid: float
-    body_rate_ratio: float
-    cable_rate_ratio: float
-    energy_ratio: float
-    cable_support: float
-    drone_power: float
-    max_thrust: float
-    spool_speed: float
-    spool_accel: float
+    tracking_error_m: float
+    tool_speed_m_s: float
+    body_attitude_deg: float
+    cable_angle_deg: float
+    body_rate_deg_s: float
+    cable_rate_deg_s: float
+    desired_tension_N: float
+    measured_tension_N: float
+    cable_vertical_force_N: float
+    spool_velocity_m_s: float
+    mpc_solve_ms: float
     left_thrust: float
     right_thrust: float
-    desired_tension: float
-    measured_tension: float
 
 
 class QtEvalWindow(QtWidgets.QMainWindow):
@@ -85,7 +83,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         if app is not None:
             app.setFont(qt_ui_font(9))
         self.setWindowTitle("PRISMS Wall Tool Controller")
-        self.resize(1480, 900)
+        self.resize(1560, 940)
 
         self.scenario = default_scenario()
         self.sim = make_simulator()
@@ -149,7 +147,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(8)
         main.addWidget(right)
-        main.setSizes([900, 500])
+        main.setSizes([980, 580])
 
         metrics = QtWidgets.QGridLayout()
         metrics.setHorizontalSpacing(6)
@@ -158,11 +156,11 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.metric_captions: dict[str, QtWidgets.QLabel] = {}
         metric_specs = (
             ("tracking", "Tracking Error", "#111111"),
-            ("contact", "Task Valid", "#2f855a"),
-            ("support", "Cable Support", "#2f855a"),
+            ("contact", "Contact Force", "#2f855a"),
+            ("tension", "Cable Tension", "#2f855a"),
             ("speed", "Tool Speed", "#2563a8"),
-            ("power", "Drone Power", "#6b46c1"),
-            ("energy", "Swing Energy", "#c05621"),
+            ("thrust", "Drone Thrust", "#6b46c1"),
+            ("solve", "MPC Solve", "#c05621"),
         )
         for index, (key, label, color) in enumerate(metric_specs):
             box = QtWidgets.QFrame()
@@ -225,8 +223,13 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             self.telemetry_labels[key] = value
         right_layout.addWidget(telemetry_box)
 
-        self.plot_layout = pg.GraphicsLayoutWidget()
-        right_layout.addWidget(self.plot_layout, 1)
+        self.plot_tabs = QtWidgets.QTabWidget()
+        self.plot_tabs.setDocumentMode(True)
+        self.plot_tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #d8ddd6; border-radius: 4px; } "
+            "QTabBar::tab { padding: 6px 12px; min-width: 78px; }"
+        )
+        right_layout.addWidget(self.plot_tabs, 1)
 
         toolbar = QtWidgets.QHBoxLayout()
         self.play_button = QtWidgets.QPushButton("Pause")
@@ -338,48 +341,73 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.ax.legend(loc="lower right", fontsize=7, framealpha=0.92, ncol=2)
 
     def _build_plots(self) -> None:
-        self.task_plot = self._make_plot("Task Validity", row=0)
-        self.task_error_curve = self.task_plot.plot(pen=pg.mkPen("#111111", width=2), name="tracking")
-        self.task_speed_curve = self.task_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="speed")
-        self.task_valid_curve = self.task_plot.plot(pen=pg.mkPen("#2f855a", width=2, style=QtCore.Qt.PenStyle.DashLine), name="valid")
+        motion_tab = self._make_plot_tab("Motion")
+        self.tracking_plot = self._make_plot(motion_tab, "Tracking Error", row=0, ylabel="m")
+        self.tracking_error_curve = self.tracking_plot.plot(pen=pg.mkPen("#111111", width=2), name="error [m]")
 
-        self.trajectory_plot = self._make_plot("Trajectory Real vs Desired", row=1, normalized=False)
+        self.trajectory_plot = self._make_plot(motion_tab, "Trajectory Real vs Desired", row=1, ylabel="m")
         self.payload_x_curve = self.trajectory_plot.plot(pen=pg.mkPen("#111111", width=2), name="real x")
         self.reference_x_curve = self.trajectory_plot.plot(pen=pg.mkPen("#111111", width=1, style=QtCore.Qt.PenStyle.DashLine), name="des x")
         self.payload_z_curve = self.trajectory_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="real z")
         self.reference_z_curve = self.trajectory_plot.plot(pen=pg.mkPen("#2563a8", width=1, style=QtCore.Qt.PenStyle.DashLine), name="des z")
 
-        self.smooth_plot = self._make_plot("Smoothness And Energy", row=2)
-        self.body_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#c05621", width=2), name="body rate")
-        self.cable_rate_curve = self.smooth_plot.plot(pen=pg.mkPen("#718096", width=2), name="cable rate")
-        self.energy_curve = self.smooth_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="energy")
+        self.speed_plot = self._make_plot(motion_tab, "Tool Speed", row=2, ylabel="m/s", show_bottom=True)
+        self.tool_speed_curve = self.speed_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="speed")
 
-        self.input_plot = self._make_plot("Drone Inputs", row=3)
-        self.left_input_curve = self.input_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="left thrust")
-        self.right_input_curve = self.input_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="right thrust")
+        actuation_tab = self._make_plot_tab("Actuation")
+        self.input_plot = self._make_plot(actuation_tab, "Drone Inputs", row=0, ylabel="N")
+        self.left_input_curve = self.input_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="left thrust [N]")
+        self.right_input_curve = self.input_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="right thrust [N]")
 
-        self.act_plot = self._make_plot("Cable And Actuators", row=4)
-        self.support_curve = self.act_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="support")
-        self.power_curve = self.act_plot.plot(pen=pg.mkPen("#6b46c1", width=2), name="power")
-        self.thrust_curve = self.act_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="thrust")
+        self.cable_plot = self._make_plot(actuation_tab, "Cable Tension And Vertical Support", row=1, ylabel="N")
+        self.measured_tension_curve = self.cable_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="measured tension")
+        self.desired_tension_curve = self.cable_plot.plot(
+            pen=pg.mkPen("#111111", width=1, style=QtCore.Qt.PenStyle.DashLine),
+            name="desired tension",
+        )
+        self.cable_vertical_curve = self.cable_plot.plot(pen=pg.mkPen("#6b46c1", width=2), name="vertical support")
 
-        self.reel_plot = self._make_plot("Reel Command", row=5)
-        self.spool_curve = self.reel_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="spool")
-        self.spool_accel_curve = self.reel_plot.plot(pen=pg.mkPen("#c05621", width=2), name="reel accel")
+        self.reel_plot = self._make_plot(actuation_tab, "Reel Velocity", row=2, ylabel="m/s", show_bottom=True)
+        self.spool_curve = self.reel_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="reel velocity")
 
-    def _make_plot(self, title: str, row: int, normalized: bool = True) -> pg.PlotItem:
-        plot = self.plot_layout.addPlot(row=row, col=0, title=title)
+        attitude_tab = self._make_plot_tab("Attitude")
+        self.attitude_plot = self._make_plot(attitude_tab, "Body And Cable Angle", row=0, ylabel="deg")
+        self.body_attitude_curve = self.attitude_plot.plot(pen=pg.mkPen("#c05621", width=2), name="body angle")
+        self.cable_angle_curve = self.attitude_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="cable angle")
+
+        self.rate_plot = self._make_plot(attitude_tab, "Body And Cable Rate", row=1, ylabel="deg/s", show_bottom=True)
+        self.body_rate_curve = self.rate_plot.plot(pen=pg.mkPen("#c05621", width=2), name="body rate")
+        self.cable_rate_curve = self.rate_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="cable rate")
+
+        mpc_tab = self._make_plot_tab("MPC")
+        self.mpc_plot = self._make_plot(mpc_tab, "MPC Solve Time", row=0, ylabel="ms", show_bottom=True)
+        self.mpc_solve_curve = self.mpc_plot.plot(pen=pg.mkPen("#c05621", width=2), name="solve time")
+
+    def _make_plot_tab(self, title: str) -> pg.GraphicsLayoutWidget:
+        widget = pg.GraphicsLayoutWidget()
+        widget.ci.layout.setSpacing(4)
+        self.plot_tabs.addTab(widget, title)
+        return widget
+
+    def _make_plot(
+        self,
+        layout: pg.GraphicsLayoutWidget,
+        title: str,
+        row: int,
+        ylabel: str,
+        show_bottom: bool = False,
+    ) -> pg.PlotItem:
+        plot = layout.addPlot(row=row, col=0, title=title)
         plot.addLegend(offset=(-8, 8), labelTextColor="#18201c")
         plot.showGrid(x=True, y=True, alpha=0.22)
-        if normalized:
-            plot.setYRange(-0.04, 1.2)
-            plot.addLine(y=1.0, pen=pg.mkPen("#d95f0e", width=1, style=QtCore.Qt.PenStyle.DashLine))
         plot.getAxis("left").setWidth(42)
         for axis_name in ("left", "bottom"):
-            plot.getAxis(axis_name).setTickFont(QtGui.QFont("Segoe UI", 8))
-        plot.setLabel("left", "normalized" if normalized else "m")
-        if row == 5:
-            plot.setLabel("bottom", "time before now", "s")
+            axis = plot.getAxis(axis_name)
+            axis.setTickFont(QtGui.QFont("Segoe UI", 8))
+            axis.enableAutoSIPrefix(False)
+        plot.setLabel("left", ylabel)
+        if show_bottom:
+            plot.setLabel("bottom", "time before now [s]")
         else:
             plot.hideAxis("bottom")
         return plot
@@ -414,21 +442,13 @@ class QtEvalWindow(QtWidgets.QMainWindow):
 
     def update_metrics(self) -> None:
         state = self.sim.history[-1]
-        params = self.sim.params
-        weight = max(params.total_mass * params.gravity, 1e-9)
         speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
-        no_cable_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
-        no_cable_power = max(2.0 * no_cable_each**1.5, 1e-9)
-        drone_power = (state.left_thrust**1.5 + state.right_thrust**1.5) / no_cable_power
-        support = state.cable_vertical_force / weight
-        contact = f"{state.contact_force:.2f} N" if state.contact_valid else ("bad" if state.work_mode else "off")
-        energy = f"{1000.0 * state.swing_energy_J:.3f} mJ" if state.swing_energy_J < 0.001 else f"{state.swing_energy_J:.4f} J"
         self.metric_labels["tracking"].setText(f"{state.tool_error:.3f} m")
-        self.metric_labels["contact"].setText(contact)
-        self.metric_labels["support"].setText(f"{100.0 * support:.0f}%")
+        self.metric_labels["contact"].setText(f"{state.contact_force:.2f} N")
+        self.metric_labels["tension"].setText(f"{state.measured_tension:.2f} N")
         self.metric_labels["speed"].setText(f"{speed:.2f} m/s")
-        self.metric_labels["power"].setText(f"{100.0 * drone_power:.0f}%")
-        self.metric_labels["energy"].setText(energy)
+        self.metric_labels["thrust"].setText(f"{state.left_thrust:.2f} / {state.right_thrust:.2f} N")
+        self.metric_labels["solve"].setText(f"{1000.0 * state.mpc_solve_time_s:.1f} ms")
         self.status_label.setText(
             f"t {state.t:6.1f}s   wp {state.active_waypoints:2d}   "
             f"mpc {1000.0 * state.mpc_solve_time_s:5.1f}ms   error {state.tool_error:5.3f}m"
@@ -509,8 +529,8 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.reference_label.set_position((state.reference[0] + 0.05, state.reference[1] + 0.05))
         self.status_box.set_text(
             f"tracking {state.tool_error:.3f} m\n"
-            f"contact {'valid' if state.contact_valid else ('invalid' if state.work_mode else 'off')}\n"
-            f"support {100.0 * state.cable_vertical_force / max(params.total_mass * params.gravity, 1e-9):.0f}%\n"
+            f"contact {state.contact_force:.2f} N\n"
+            f"tension {state.measured_tension:.2f} N\n"
             f"mpc {1000.0 * state.mpc_solve_time_s:.1f} ms"
         )
         self._update_force_arrows(state, left_center, right_center)
@@ -542,23 +562,23 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             return
         t = np.array([sample.t for sample in samples], dtype=float)
         x = t - t[-1]
-        self.task_error_curve.setData(x, [sample.tracking_ratio for sample in samples])
-        self.task_speed_curve.setData(x, [sample.speed_ratio for sample in samples])
-        self.task_valid_curve.setData(x, [sample.contact_valid for sample in samples])
+        self.tracking_error_curve.setData(x, [sample.tracking_error_m for sample in samples])
+        self.tool_speed_curve.setData(x, [sample.tool_speed_m_s for sample in samples])
         self.payload_x_curve.setData(x, [sample.payload_x for sample in samples])
         self.reference_x_curve.setData(x, [sample.reference_x for sample in samples])
         self.payload_z_curve.setData(x, [sample.payload_z for sample in samples])
         self.reference_z_curve.setData(x, [sample.reference_z for sample in samples])
-        self.body_rate_curve.setData(x, [sample.body_rate_ratio for sample in samples])
-        self.cable_rate_curve.setData(x, [sample.cable_rate_ratio for sample in samples])
-        self.energy_curve.setData(x, [sample.energy_ratio for sample in samples])
+        self.body_attitude_curve.setData(x, [sample.body_attitude_deg for sample in samples])
+        self.cable_angle_curve.setData(x, [sample.cable_angle_deg for sample in samples])
+        self.body_rate_curve.setData(x, [sample.body_rate_deg_s for sample in samples])
+        self.cable_rate_curve.setData(x, [sample.cable_rate_deg_s for sample in samples])
         self.left_input_curve.setData(x, [sample.left_thrust for sample in samples])
         self.right_input_curve.setData(x, [sample.right_thrust for sample in samples])
-        self.support_curve.setData(x, [sample.cable_support for sample in samples])
-        self.power_curve.setData(x, [sample.drone_power for sample in samples])
-        self.thrust_curve.setData(x, [sample.max_thrust for sample in samples])
-        self.spool_curve.setData(x, [sample.spool_speed for sample in samples])
-        self.spool_accel_curve.setData(x, [sample.spool_accel for sample in samples])
+        self.measured_tension_curve.setData(x, [sample.measured_tension_N for sample in samples])
+        self.desired_tension_curve.setData(x, [sample.desired_tension_N for sample in samples])
+        self.cable_vertical_curve.setData(x, [sample.cable_vertical_force_N for sample in samples])
+        self.spool_curve.setData(x, [sample.spool_velocity_m_s for sample in samples])
+        self.mpc_solve_curve.setData(x, [sample.mpc_solve_ms for sample in samples])
         y_values = [sample.payload_x for sample in samples] + [sample.reference_x for sample in samples]
         y_values += [sample.payload_z for sample in samples] + [sample.reference_z for sample in samples]
         y_min = min(y_values)
@@ -566,22 +586,21 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         if y_max > y_min:
             margin = max(0.05, 0.08 * (y_max - y_min))
             self.trajectory_plot.setYRange(y_min - margin, y_max + margin, padding=0.0)
-        for plot in (self.task_plot, self.trajectory_plot, self.smooth_plot, self.input_plot, self.act_plot, self.reel_plot):
+        for plot in (
+            self.tracking_plot,
+            self.trajectory_plot,
+            self.speed_plot,
+            self.attitude_plot,
+            self.rate_plot,
+            self.input_plot,
+            self.cable_plot,
+            self.reel_plot,
+            self.mpc_plot,
+        ):
             plot.setXRange(max(-18.0, x[0]), 0.0, padding=0.0)
 
     def _append_eval_sample(self, state: SimState) -> None:
-        params = self.sim.params
-        weight = max(params.total_mass * params.gravity, 1e-9)
         speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
-        no_cable_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
-        no_cable_power = max(2.0 * no_cable_each**1.5, 1e-9)
-        spool_accel = 0.0
-        if self.eval_samples:
-            last_state = self.sim.history[-2] if len(self.sim.history) >= 2 else state
-            dt = max(state.t - last_state.t, 1e-9)
-            spool_accel = abs(state.spool_velocity_cmd - last_state.spool_velocity_cmd) / (
-                dt * max(params.spool_accel_limit_mps2, 1e-9)
-            )
         self.eval_samples.append(
             EvalSample(
                 t=state.t,
@@ -589,21 +608,19 @@ class QtEvalWindow(QtWidgets.QMainWindow):
                 payload_z=state.payload[1],
                 reference_x=state.reference[0],
                 reference_z=state.reference[1],
-                tracking_ratio=state.tool_error / max(params.work_contact_tracking_limit_m, 1e-9),
-                speed_ratio=speed / max(params.work_contact_speed_limit_mps, 1e-9),
-                contact_valid=1.0 if state.contact_valid else 0.0,
-                body_rate_ratio=abs(state.angular_velocity) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9),
-                cable_rate_ratio=abs(state.theta_dot) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9),
-                energy_ratio=state.swing_energy_J / max(params.mpc_energy_plot_limit_J, 1e-9),
-                cable_support=state.cable_vertical_force / weight,
-                drone_power=(state.left_thrust**1.5 + state.right_thrust**1.5) / no_cable_power,
-                max_thrust=max(state.left_thrust, state.right_thrust) / max(params.max_thrust_per_drone, 1e-9),
-                spool_speed=abs(state.spool_velocity_cmd) / max(params.max_spool_speed, 1e-9),
-                spool_accel=spool_accel,
-                left_thrust=state.left_thrust / max(params.max_thrust_per_drone, 1e-9),
-                right_thrust=state.right_thrust / max(params.max_thrust_per_drone, 1e-9),
-                desired_tension=state.desired_cable_tension / max(params.max_spool_tension, 1e-9),
-                measured_tension=state.measured_tension / max(params.max_spool_tension, 1e-9),
+                tracking_error_m=state.tool_error,
+                tool_speed_m_s=speed,
+                body_attitude_deg=math.degrees(state.attitude),
+                cable_angle_deg=math.degrees(state.theta),
+                body_rate_deg_s=math.degrees(state.angular_velocity),
+                cable_rate_deg_s=math.degrees(state.theta_dot),
+                desired_tension_N=state.desired_cable_tension,
+                measured_tension_N=state.measured_tension,
+                cable_vertical_force_N=state.cable_vertical_force,
+                spool_velocity_m_s=state.spool_velocity_cmd,
+                mpc_solve_ms=1000.0 * state.mpc_solve_time_s,
+                left_thrust=state.left_thrust,
+                right_thrust=state.right_thrust,
             )
         )
         if len(self.eval_samples) > 1200:

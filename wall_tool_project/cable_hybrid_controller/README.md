@@ -5,8 +5,10 @@ This is the main controller package for the wall-tool project.
 The chosen architecture is:
 
 - `tool_head_nmpc` nonlinear MPC over the wall-plane payload/cable/drone model,
-- direct optimization of left drone thrust, right drone thrust, cable tension,
-  and reel velocity,
+- direct optimization of left drone thrust, right drone thrust, desired cable
+  support/tension, and reel feedforward velocity,
+- the simulated hardware only actuates reel speed; desired tension is realized
+  through a load-cell feedback reel-speed loop and a stiff cable model,
 - prediction of payload position, velocity, tilt, angular rate, and paid-out
   cable length over the horizon,
 - hard constraints for wall bounds, actuator limits, cable tension/support

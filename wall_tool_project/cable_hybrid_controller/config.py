@@ -38,7 +38,7 @@ FACADE_MISSION_OVERRIDES = {
 
 
 # Desired path generation.
-BEST_PATH_SPEED = 0.16
+BEST_PATH_SPEED = 0.3
 COVERAGE_CORNER_SPEED = 0.040
 REFERENCE_CONFIG = {
     "path_speed": BEST_PATH_SPEED,
@@ -56,10 +56,10 @@ ACTIVE_CONTROLLER = {
 
 # NMPC horizon and solver.
 MPC_SOLVER_CONFIG = {
-    "mpc_horizon_steps": 10,
-    "mpc_horizon_dt": 0.120,
-    "mpc_control_period_s": 0.040,
-    "mpc_solver_max_iter": 50,
+    "mpc_horizon_steps": 15,
+    "mpc_horizon_dt": 0.200,
+    "mpc_control_period_s": 0.080,
+    "mpc_solver_max_iter": 40,
     "mpc_solver_tolerance": 1e-5,
     "mpc_energy_plot_limit_J": 0.015,
 }
@@ -97,6 +97,12 @@ CABLE_REEL_CONFIG = {
     "min_tracking_tension": 0.10,
     "max_spool_tension": 24.0,
     "cable_taut_band": 0.006,
+    "cable_stiffness_N_m": 750.0,
+    "cable_damping_N_s_m": 1.20,
+    "reel_tension_kp_mps_N": 0.055,
+    "reel_tension_ki_mps_Ns": 0.010,
+    "reel_tension_integral_limit_Ns": 5.0,
+    "load_cell_filter_tau_s": 0.018,
 }
 
 

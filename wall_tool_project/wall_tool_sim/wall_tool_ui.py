@@ -423,13 +423,19 @@ class SimParams:
     mpc_solver_tolerance: float = 1e-5
     mpc_energy_plot_limit_J: float = 0.015
 
-    # Cable and reel limits used by the active inextensible-cable plant.
+    # Cable and reel limits used by the active nearly-inextensible cable plant.
     max_cable_support_fraction: float = 1.0
     max_spool_speed: float = 0.58
     spool_accel_limit_mps2: float = 0.80
     cable_taut_band: float = 0.006
+    cable_stiffness_N_m: float = 750.0
+    cable_damping_N_s_m: float = 1.2
     max_spool_tension: float = 24.0
     min_tracking_tension: float = 0.10
+    reel_tension_kp_mps_N: float = 0.055
+    reel_tension_ki_mps_Ns: float = 0.010
+    reel_tension_integral_limit_Ns: float = 5.0
+    load_cell_filter_tau_s: float = 0.018
     min_cable_vertical_efficiency: float = 0.08
     min_control_cable_length: float = 0.62
 
@@ -1467,6 +1473,8 @@ class WallToolSimulator:
         self.cable_tension_saturated = False
         self.filtered_cable_tension_target = initial_tension
         self.actual_tension = initial_tension
+        self.load_cell_tension = initial_tension
+        self.reel_tension_error_integral = 0.0
         self.last_spool_velocity_cmd = 0.0
         self._nmpc_next_solve_t = 0.0
         self._nmpc_last_solution = None
@@ -1632,11 +1640,17 @@ class WallToolSimulator:
         self.measured_theta_dot = self.theta_dot
         self.measured_cable_length = self.cable_length
         self.measured_cable_velocity = self.last_spool_velocity_cmd
-        self.measured_tension = clamp(self.actual_tension, 0.0, params.max_spool_tension)
+        if params.load_cell_filter_tau_s > 0.0:
+            alpha = clamp(params.dt / max(params.load_cell_filter_tau_s + params.dt, 1e-9), 0.0, 1.0)
+            self.load_cell_tension += alpha * (self.actual_tension - self.load_cell_tension)
+            self.measured_tension = clamp(self.load_cell_tension, 0.0, params.max_spool_tension)
+        else:
+            self.load_cell_tension = self.actual_tension
+            self.measured_tension = clamp(self.actual_tension, 0.0, params.max_spool_tension)
         self.measured_attitude = self.attitude
         self.measured_angular_velocity = self.angular_velocity
 
-        self.measured_cable_stretch = 0.0
+        self.measured_cable_stretch = self.cable_stretch
         self.measured_line_velocity = self.length_dot
         self.measured_line_length = self.length
         self.measured_payload = self.position
@@ -1868,8 +1882,6 @@ class WallToolSimulator:
 
         true_mount = self._cable_mount_position(self.position, self.attitude)
         true_distance = distance2(params.anchor, true_mount)
-        if self.cable_length < true_distance:
-            self.cable_length = clamp(true_distance, params.min_cable_length, params.max_cable_length)
         measured_state = (
             self.measured_payload[0],
             self.measured_payload[1],
@@ -1895,9 +1907,20 @@ class WallToolSimulator:
         left_thrust = clamp(solution.left_thrust, 0.0, params.max_thrust_per_drone)
         right_thrust = clamp(solution.right_thrust, 0.0, params.max_thrust_per_drone)
         desired_cable_tension = clamp(solution.cable_tension, 0.0, params.max_spool_tension)
+        tension_error = desired_cable_tension - self.measured_tension
+        self.reel_tension_error_integral = clamp(
+            self.reel_tension_error_integral + tension_error * params.dt,
+            -params.reel_tension_integral_limit_Ns,
+            params.reel_tension_integral_limit_Ns,
+        )
+        spool_velocity_request = (
+            solution.spool_velocity
+            - params.reel_tension_kp_mps_N * tension_error
+            - params.reel_tension_ki_mps_Ns * self.reel_tension_error_integral
+        )
         max_spool_delta = params.spool_accel_limit_mps2 * params.dt
         spool_velocity_cmd = clamp(
-            solution.spool_velocity,
+            spool_velocity_request,
             self.last_spool_velocity_cmd - max_spool_delta,
             self.last_spool_velocity_cmd + max_spool_delta,
         )
@@ -1909,9 +1932,7 @@ class WallToolSimulator:
             params.min_cable_length,
             params.max_cable_length,
         )
-        if self.cable_length < true_distance:
-            self.cable_length = clamp(true_distance, params.min_cable_length, params.max_cable_length)
-            spool_velocity_cmd = (self.cable_length - previous_cable_length) / max(params.dt, 1e-9)
+        spool_velocity_cmd = (self.cable_length - previous_cable_length) / max(params.dt, 1e-9)
         self.last_spool_velocity_cmd = spool_velocity_cmd
 
         true_cable_arm = self._cable_mount_offset(self.attitude)
@@ -1921,16 +1942,22 @@ class WallToolSimulator:
         true_distance = max(1e-9, math.hypot(anchor_to_mount[0], anchor_to_mount[1]))
         true_cable_out = (anchor_to_mount[0] / true_distance, anchor_to_mount[1] / true_distance)
         true_cable_axis = (-true_cable_out[0], -true_cable_out[1])
-        slack_gap = max(0.0, self.cable_length - true_distance)
+        radial_mount_velocity = dot2(true_cable_out, true_mount_velocity)
+        cable_extension = true_distance - self.cable_length
+        cable_extension_rate = radial_mount_velocity - spool_velocity_cmd
+        raw_tension = (
+            params.cable_stiffness_N_m * cable_extension
+            + params.cable_damping_N_s_m * cable_extension_rate
+        )
         actual_tension_limit = self._cable_support_tension_limit(true_cable_axis, params)
-        self.cable_tension_saturated = desired_cable_tension > actual_tension_limit
-        if slack_gap <= params.cable_taut_band:
-            tension = clamp(desired_cable_tension, 0.0, actual_tension_limit)
+        self.cable_tension_saturated = raw_tension > actual_tension_limit
+        if cable_extension >= -params.cable_taut_band:
+            tension = clamp(raw_tension, 0.0, actual_tension_limit)
         else:
             tension = 0.0
         self.actual_tension = tension
-        self.cable_stretch = 0.0
-        self.cable_slack = slack_gap > params.cable_taut_band or tension <= 1e-9
+        self.cable_stretch = max(0.0, cable_extension)
+        self.cable_slack = cable_extension < -params.cable_taut_band or tension <= 1e-9
         cable_force = scale2(true_cable_axis, tension)
 
         true_left_axis, true_right_axis = self._drone_axes(self.attitude)
@@ -2368,36 +2395,29 @@ class WallToolApp:
         )
 
     def _build_live_plots(self) -> None:
-        self.task_error_line, = self.task_ax.plot([], [], color="#111111", linewidth=1.5, label="tracking")
-        self.task_speed_line, = self.task_ax.plot([], [], color="#2b6cb0", linewidth=1.3, label="speed")
-        self.task_contact_line, = self.task_ax.plot([], [], color="#2f855a", linewidth=1.2, linestyle="--", label="valid")
-        self._format_ratio_axis(self.task_ax, "Task Validity", "limit ratio")
+        self.task_error_line, = self.task_ax.plot([], [], color="#111111", linewidth=1.5, label="error [m]")
+        self._format_live_axis(self.task_ax, "Tracking Error", "m")
         self.task_ax.tick_params(labelbottom=False)
 
-        self.smooth_accel_line, = self.smooth_ax.plot([], [], color="#6b46c1", linewidth=1.35, label="accel")
-        self.smooth_body_line, = self.smooth_ax.plot([], [], color="#c05621", linewidth=1.25, label="body rate")
-        self.smooth_cable_rate_line, = self.smooth_ax.plot([], [], color="#718096", linewidth=1.1, label="cable rate")
-        self.smooth_energy_line, = self.smooth_ax.plot([], [], color="#2f855a", linewidth=1.1, label="swing E")
-        self._format_ratio_axis(self.smooth_ax, "Smoothness", "ratio")
+        self.smooth_body_line, = self.smooth_ax.plot([], [], color="#c05621", linewidth=1.25, label="body angle [deg]")
+        self.smooth_cable_rate_line, = self.smooth_ax.plot([], [], color="#2b6cb0", linewidth=1.1, label="cable angle [deg]")
+        self._format_live_axis(self.smooth_ax, "Body And Cable Angle", "deg")
         self.smooth_ax.tick_params(labelbottom=False)
 
-        self.support_line, = self.cable_ax.plot([], [], color="#2f855a", linewidth=1.35, label="cable support")
-        self.power_line, = self.cable_ax.plot([], [], color="#6b46c1", linewidth=1.25, label="drone power")
-        self.thrust_fraction_line, = self.cable_ax.plot([], [], color="#c53030", linewidth=1.2, label="max thrust")
-        self._format_ratio_axis(self.cable_ax, "Cable And Actuators", "fraction")
+        self.support_line, = self.cable_ax.plot([], [], color="#2f855a", linewidth=1.35, label="tension [N]")
+        self.power_line, = self.cable_ax.plot([], [], color="#111111", linewidth=1.0, linestyle="--", label="desired [N]")
+        self.thrust_fraction_line, = self.cable_ax.plot([], [], color="#6b46c1", linewidth=1.2, label="vertical support [N]")
+        self._format_live_axis(self.cable_ax, "Cable Tension", "N")
         self.cable_ax.tick_params(labelbottom=False)
 
-        self.spool_velocity_ratio_line, = self.reel_ax.plot([], [], color="#2b6cb0", linewidth=1.2, label="spool speed")
-        self.spool_accel_ratio_line, = self.reel_ax.plot([], [], color="#c53030", linewidth=1.0, alpha=0.78, label="spool accel")
-        self._format_ratio_axis(self.reel_ax, "Reel Command", "ratio")
+        self.spool_velocity_ratio_line, = self.reel_ax.plot([], [], color="#2b6cb0", linewidth=1.2, label="reel velocity [m/s]")
+        self._format_live_axis(self.reel_ax, "Reel Velocity", "m/s")
         self.reel_ax.set_xlabel("time [s]", fontsize=7.8)
 
     @staticmethod
-    def _format_ratio_axis(ax, title: str, ylabel: str) -> None:
-        ax.axhline(1.0, color="#d95f0e", linestyle="--", linewidth=0.9, alpha=0.85)
+    def _format_live_axis(ax, title: str, ylabel: str) -> None:
         ax.set_title(title, fontsize=9.2)
         ax.set_ylabel(ylabel, fontsize=7.8)
-        ax.set_ylim(-0.04, 1.18)
         ax.grid(True, color="#dddddd", linewidth=0.7)
         ax.legend(loc="upper right", fontsize=5.9, framealpha=0.90, ncol=2)
         ax.tick_params(axis="both", labelsize=7.2)
@@ -2548,35 +2568,19 @@ class WallToolApp:
     def _efficiency_text(self, state: SimState) -> str:
         params = self.params
         weight = max(params.total_mass * params.gravity, 1e-9)
-        no_cable_hover_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
-        no_cable_power_index = max(2.0 * no_cable_hover_each**1.5, 1e-9)
-        drone_power_index = state.left_thrust**1.5 + state.right_thrust**1.5
-        drone_power_ratio = drone_power_index / no_cable_power_index
-        max_thrust_fraction = max(state.left_thrust, state.right_thrust) / max(params.max_thrust_per_drone, 1e-9)
-        residual_fraction = state.allocation_residual / weight
         speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
         acceleration = math.hypot(state.payload_acceleration[0], state.payload_acceleration[1])
-        tracking_ratio = state.tool_error / max(params.work_contact_tracking_limit_m, 1e-9)
-        speed_ratio = speed / max(params.work_contact_speed_limit_mps, 1e-9)
-        accel_ratio = acceleration / max(params.reference_accel_limit_mps2, 1e-9)
-        body_rate_ratio = abs(state.angular_velocity) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9)
-        swing_energy_ratio = state.swing_energy_J / max(params.mpc_energy_plot_limit_J, 1e-9)
-        spool_speed_ratio = abs(state.spool_velocity_cmd) / max(params.max_spool_speed, 1e-9)
-        spool_accel_ratio = self._latest_spool_accel_ratio()
         cable_support = state.cable_vertical_force / weight
-        contact_state = "OK" if state.contact_valid else ("BAD" if state.work_mode else "OFF")
         controller_state = "OK"
-        if max(tracking_ratio, speed_ratio, body_rate_ratio, spool_accel_ratio, max_thrust_fraction) > 1.0:
-            controller_state = "LIMIT"
         if state.cable_slack:
             controller_state = "SLACK"
         window_text = self._window_metrics_text()
         return (
             f"t {state.t:6.1f}s  wp {state.active_waypoints:2d}  {controller_state}\n"
-            f"contact {contact_state:>3s} {state.contact_force:4.2f}N  mpc {1000.0 * state.mpc_solve_time_s:4.1f}ms\n"
-            f"task   trk {tracking_ratio:4.2f}  spd {speed_ratio:4.2f}  body {body_rate_ratio:4.2f}\n"
-            f"smooth acc {accel_ratio:4.2f}  E {swing_energy_ratio:4.2f}  reel {spool_accel_ratio:4.2f}\n"
-            f"cable  sup {100.0 * cable_support:4.0f}%  power {100.0 * drone_power_ratio:4.0f}%  res {100.0 * residual_fraction:4.1f}%\n"
+            f"tracking {state.tool_error:5.3f}m  speed {speed:4.2f}m/s  accel {acceleration:4.2f}m/s^2\n"
+            f"contact {state.contact_force:4.2f}N  tension {state.measured_tension:4.2f}N  support {100.0 * cable_support:4.0f}%\n"
+            f"inputs L {state.left_thrust:4.2f}N  R {state.right_thrust:4.2f}N  reel {state.spool_velocity_cmd:+5.3f}m/s\n"
+            f"mpc {1000.0 * state.mpc_solve_time_s:4.1f}ms  {state.mpc_status[:22]}\n"
             f"{window_text}"
         )
 
@@ -2593,7 +2597,6 @@ class WallToolApp:
         no_cable_hover_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
         no_cable_power_index = max(2.0 * no_cable_hover_each**1.5, 1e-9)
         rms_error = math.sqrt(sum(sample.tool_error * sample.tool_error for sample in samples) / len(samples))
-        valid_fraction = sum(1.0 if sample.contact_valid else 0.0 for sample in samples) / len(samples)
         cable_support = sum(sample.cable_vertical_force / weight for sample in samples) / len(samples)
         drone_power = sum((sample.left_thrust**1.5 + sample.right_thrust**1.5) / no_cable_power_index for sample in samples) / len(samples)
         max_thrust = max(max(sample.left_thrust, sample.right_thrust) / max(params.max_thrust_per_drone, 1e-9) for sample in samples)
@@ -2607,19 +2610,10 @@ class WallToolApp:
         sorted_jerks = sorted(jerks)
         p95_jerk = sorted_jerks[int(0.95 * (len(sorted_jerks) - 1))] if sorted_jerks else 0.0
         return (
-            f"last {self.live_window_s:.0f}s rms {rms_error:5.3f}m  valid {100.0 * valid_fraction:4.0f}%\n"
+            f"last {self.live_window_s:.0f}s rms {rms_error:5.3f}m\n"
             f"p95 body {p95_body:4.2f}rad/s  jerk {p95_jerk:4.1f}\n"
             f"avg sup {100.0 * cable_support:4.0f}%  power {100.0 * drone_power:4.0f}%  peak {100.0 * max_thrust:4.0f}%"
         )
-
-    def _latest_spool_accel_ratio(self) -> float:
-        if len(self.sim.history) < 2:
-            return 0.0
-        current = self.sim.history[-1]
-        previous = self.sim.history[-2]
-        dt = max(current.t - previous.t, 1e-9)
-        spool_accel = abs((current.spool_velocity_cmd - previous.spool_velocity_cmd) / dt)
-        return spool_accel / max(self.params.spool_accel_limit_mps2, 1e-9)
 
     def _update_live_plots(self) -> None:
         if not self.sim.history:
@@ -2628,95 +2622,40 @@ class WallToolApp:
         start_t = max(0.0, latest_t - self.live_window_s)
         samples = [sample for sample in self.sim.history if sample.t >= start_t]
         times = [sample.t for sample in samples]
-        params = self.params
-        weight = max(params.total_mass * params.gravity, 1e-9)
-        no_cable_hover_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
-        no_cable_power_index = max(2.0 * no_cable_hover_each**1.5, 1e-9)
 
-        tracking_ratio = [sample.tool_error / max(params.work_contact_tracking_limit_m, 1e-9) for sample in samples]
-        speed_ratio = [
-            math.hypot(sample.payload_velocity[0], sample.payload_velocity[1])
-            / max(params.work_contact_speed_limit_mps, 1e-9)
-            for sample in samples
-        ]
-        contact_valid = [1.0 if sample.contact_valid else 0.0 for sample in samples]
-        self.task_error_line.set_data(times, tracking_ratio)
-        self.task_speed_line.set_data(times, speed_ratio)
-        self.task_contact_line.set_data(times, contact_valid)
+        tracking_error = [sample.tool_error for sample in samples]
+        self.task_error_line.set_data(times, tracking_error)
 
-        accel_ratio = [
-            math.hypot(sample.payload_acceleration[0], sample.payload_acceleration[1])
-            / max(params.reference_accel_limit_mps2, 1e-9)
-            for sample in samples
-        ]
-        body_rate_ratio = [
-            abs(sample.angular_velocity) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9)
-            for sample in samples
-        ]
-        cable_rate_ratio = [
-            abs(sample.theta_dot) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9)
-            for sample in samples
-        ]
-        swing_energy_ratio = [
-            sample.swing_energy_J / max(params.mpc_energy_plot_limit_J, 1e-9)
-            for sample in samples
-        ]
-        display_accel_ratio = self._moving_average(accel_ratio, 20)
-        self.smooth_accel_line.set_data(times, display_accel_ratio)
-        self.smooth_body_line.set_data(times, body_rate_ratio)
-        self.smooth_cable_rate_line.set_data(times, cable_rate_ratio)
-        self.smooth_energy_line.set_data(times, self._moving_average(swing_energy_ratio, 20))
+        body_angle = [math.degrees(sample.attitude) for sample in samples]
+        cable_angle = [math.degrees(sample.theta) for sample in samples]
+        self.smooth_body_line.set_data(times, body_angle)
+        self.smooth_cable_rate_line.set_data(times, cable_angle)
 
-        cable_support = [sample.cable_vertical_force / weight for sample in samples]
-        drone_power = [(sample.left_thrust**1.5 + sample.right_thrust**1.5) / no_cable_power_index for sample in samples]
-        thrust_fraction = [
-            max(sample.left_thrust, sample.right_thrust) / max(params.max_thrust_per_drone, 1e-9)
-            for sample in samples
-        ]
-        self.support_line.set_data(times, cable_support)
-        self.power_line.set_data(times, drone_power)
-        self.thrust_fraction_line.set_data(times, thrust_fraction)
+        tension = [sample.measured_tension for sample in samples]
+        desired_tension = [sample.desired_cable_tension for sample in samples]
+        vertical_support = [sample.cable_vertical_force for sample in samples]
+        self.support_line.set_data(times, tension)
+        self.power_line.set_data(times, desired_tension)
+        self.thrust_fraction_line.set_data(times, vertical_support)
 
-        spool_speed_ratio = [
-            abs(sample.spool_velocity_cmd) / max(params.max_spool_speed, 1e-9)
-            for sample in samples
-        ]
-        spool_accel_ratio = [0.0]
-        for index in range(1, len(samples)):
-            dt = max(samples[index].t - samples[index - 1].t, 1e-9)
-            spool_accel = abs((samples[index].spool_velocity_cmd - samples[index - 1].spool_velocity_cmd) / dt)
-            spool_accel_ratio.append(spool_accel / max(params.spool_accel_limit_mps2, 1e-9))
-        display_spool_accel_ratio = self._moving_average(spool_accel_ratio, 20)
-        self.spool_velocity_ratio_line.set_data(times, spool_speed_ratio)
-        self.spool_accel_ratio_line.set_data(times, display_spool_accel_ratio)
+        spool_velocity = [sample.spool_velocity_cmd for sample in samples]
+        self.spool_velocity_ratio_line.set_data(times, spool_velocity)
 
         x_right = max(self.live_window_s, latest_t)
         x_left = max(0.0, x_right - self.live_window_s)
         plot_groups = (
-            (self.task_ax, tracking_ratio + speed_ratio + contact_valid),
-            (self.smooth_ax, display_accel_ratio + body_rate_ratio + cable_rate_ratio + swing_energy_ratio),
-            (self.cable_ax, cable_support + drone_power + thrust_fraction),
-            (self.reel_ax, spool_speed_ratio + display_spool_accel_ratio),
+            (self.task_ax, tracking_error),
+            (self.smooth_ax, body_angle + cable_angle),
+            (self.cable_ax, tension + desired_tension + vertical_support),
+            (self.reel_ax, spool_velocity),
         )
         for axis, values in plot_groups:
             axis.set_xlim(x_left, x_right)
-            ymax = max(values + [1.0])
-            axis.set_ylim(-0.04, min(1.65, max(1.18, 1.12 * ymax)))
-
-    @staticmethod
-    def _moving_average(values: Sequence[float], window: int) -> list[float]:
-        if window <= 1 or not values:
-            return list(values)
-        smoothed: list[float] = []
-        running_sum = 0.0
-        queue: list[float] = []
-        for value in values:
-            queue.append(value)
-            running_sum += value
-            if len(queue) > window:
-                running_sum -= queue.pop(0)
-            smoothed.append(running_sum / len(queue))
-        return smoothed
+            if values:
+                ymin = min(values)
+                ymax = max(values)
+                margin = max(0.02, 0.10 * max(1e-9, ymax - ymin))
+                axis.set_ylim(ymin - margin, ymax + margin)
 
     @staticmethod
     def _set_arrow(arrow: FancyArrowPatch, start: Vec2, end: Vec2) -> None:
