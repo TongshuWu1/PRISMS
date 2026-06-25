@@ -122,8 +122,6 @@ def state_row(state: SimState, params: SimParams, mission: FacadeMission | None 
         "blur_risk": blur_risk(state),
         "facade_safety_margin": safety_margin,
         "allocation_residual_N": state.allocation_residual,
-        "reference_speed_scale": state.reference_speed_scale,
-        "reference_governor_scale": state.reference_governor_scale,
         "radial_position_error_m": state.radial_position_error_m,
         "radial_velocity_error_m_s": state.radial_velocity_error_m_s,
         "tangential_position_error_m": state.tangential_position_error_m,
@@ -332,37 +330,26 @@ def summarize_session(
             "coverage_corner_speed_m_s": COVERAGE_CORNER_SPEED,
             "max_spool_speed_m_s": params.max_spool_speed,
             "spool_accel_limit_mps2": params.spool_accel_limit_mps2,
-            "reference_speed_min": params.reference_speed_min,
-            "tracking_error_slowdown_m": params.tracking_error_slowdown_m,
-            "tracking_error_full_slow_m": params.tracking_error_full_slow_m,
-            "contact_governor_enabled": params.contact_governor_enabled,
-            "contact_governor_turn_distance_m": params.contact_governor_turn_distance_m,
-            "contact_governor_turn_min_scale": params.contact_governor_turn_min_scale,
-            "contact_governor_geometry_efficiency": params.contact_governor_geometry_efficiency,
-            "contact_governor_geometry_min_scale": params.contact_governor_geometry_min_scale,
-            "contact_governor_tracking_ratio": params.contact_governor_tracking_ratio,
-            "contact_governor_tracking_min_scale": params.contact_governor_tracking_min_scale,
-            "contact_governor_speed_ratio": params.contact_governor_speed_ratio,
-            "contact_governor_speed_min_scale": params.contact_governor_speed_min_scale,
             "max_thrust_per_drone_N": params.max_thrust_per_drone,
-            "hold_equilibrium_tilt_gain": params.hold_equilibrium_tilt_gain,
-            "hold_cable_support_fraction": params.hold_cable_support_fraction,
-            "pendulum_theta_kp": params.pendulum_theta_kp,
-            "pendulum_theta_kd": params.pendulum_theta_kd,
-            "max_pendulum_theta_ddot": params.max_pendulum_theta_ddot,
             "max_tangential_accel": params.max_tangential_accel,
-            "move_attitude_kp": params.move_attitude_kp,
-            "move_attitude_kd": params.move_attitude_kd,
-            "move_max_attitude_torque": params.move_max_attitude_torque,
-            "move_cable_torque_comp_fraction": params.move_cable_torque_comp_fraction,
-            "miesc_radial_frequency_rad_s": params.miesc_radial_frequency_rad_s,
-            "miesc_radial_damping_ratio": params.miesc_radial_damping_ratio,
-            "miesc_tangential_frequency_rad_s": params.miesc_tangential_frequency_rad_s,
-            "miesc_tangential_damping_ratio": params.miesc_tangential_damping_ratio,
-            "miesc_clf_decay_rate": params.miesc_clf_decay_rate,
-            "miesc_spool_accel_limit_mps2": params.miesc_spool_accel_limit_mps2,
-            "reference_slowdown_rate": params.reference_slowdown_rate,
-            "reference_recovery_rate": params.reference_recovery_rate,
+            "max_cable_support_fraction": params.max_cable_support_fraction,
+            "max_spool_tension_N": params.max_spool_tension,
+            "min_tracking_tension_N": params.min_tracking_tension,
+            "min_cable_vertical_efficiency": params.min_cable_vertical_efficiency,
+            "mpc_horizon_steps": params.mpc_horizon_steps,
+            "mpc_horizon_dt_s": params.mpc_horizon_dt,
+            "mpc_control_period_s": params.mpc_control_period_s,
+            "mpc_attitude_limit_rad": params.mpc_attitude_limit_rad,
+            "mpc_slack_limit_m": params.mpc_slack_limit_m,
+            "mpc_tracking_position_weight": params.mpc_tracking_position_weight,
+            "mpc_terminal_position_weight": params.mpc_terminal_position_weight,
+            "mpc_drone_effort_weight": params.mpc_drone_effort_weight,
+            "mpc_cable_effort_weight": params.mpc_cable_effort_weight,
+            "mpc_reel_speed_weight": params.mpc_reel_speed_weight,
+            "mpc_input_rate_weight": params.mpc_input_rate_weight,
+            "mpc_attitude_rate_weight": params.mpc_attitude_rate_weight,
+            "mpc_attitude_weight": params.mpc_attitude_weight,
+            "mpc_slack_weight": params.mpc_slack_weight,
         },
         "duration_s": states[-1].t if states else 0.0,
         "max_duration_s": scenario.duration_s,
@@ -631,11 +618,8 @@ def plot_session(
     axes[0].legend()
     axes[1].plot(t, [float(row["drone_power_ratio"]) for row in rows])
     axes[1].set_ylabel("drone power ratio")
-    axes[2].plot(t, [float(row["reference_speed_scale"]) for row in rows], label="applied reference speed")
-    if "reference_governor_scale" in rows[0]:
-        axes[2].plot(t, [float(row["reference_governor_scale"]) for row in rows], "--", label="governor cap")
     axes[2].plot(t, [float(row["spool_reel_in_power_W"]) for row in rows], label="reel-in power")
-    axes[2].set_ylabel("speed / power")
+    axes[2].set_ylabel("power [W]")
     axes[2].set_xlabel("time [s]")
     axes[2].legend()
     for ax in axes:
@@ -788,9 +772,6 @@ def plot_controller_dashboard(
     axes[1, 0].plot(t, _values(rows, "tracking_error_ratio"), label="tracking / limit")
     axes[1, 0].plot(t, _values(rows, "payload_speed_ratio"), label="speed / limit")
     axes[1, 0].plot(t, _values(rows, "body_rate_ratio"), label="body rate / limit")
-    axes[1, 0].plot(t, _values(rows, "reference_speed_scale"), label="reference speed")
-    if "reference_governor_scale" in rows[0]:
-        axes[1, 0].plot(t, _values(rows, "reference_governor_scale"), "--", label="governor cap")
     axes[1, 0].axhline(1.0, color="#d95f0e", linestyle="--", linewidth=1.0)
     axes[1, 0].set_title("Cleaning Limit Ratios")
     axes[1, 0].set_xlabel("time [s]")
@@ -917,9 +898,6 @@ def plot_limit_margins(
 
     axes[4].plot(t, spool_velocity, label="spool velocity")
     axes[4].plot(t, spool_accel_ratio, label="spool accel / limit")
-    axes[4].plot(t, _values(rows, "reference_speed_scale"), label="reference speed")
-    if "reference_governor_scale" in rows[0]:
-        axes[4].plot(t, _values(rows, "reference_governor_scale"), "--", label="governor cap")
     axes[4].axhline(1.0, color="#d95f0e", linestyle="--")
     axes[4].set_ylabel("m/s / ratio")
     axes[4].set_xlabel("time [s]")
@@ -953,11 +931,8 @@ def plot_smoothness(rows: Sequence[dict[str, float | int]], output_dir: Path, pa
 
     fig, axes = plt.subplots(5, 1, figsize=(12.0, 13.0), sharex=True, constrained_layout=True)
     axes[0].plot(t, _values(rows, "payload_speed_m_s"), label="payload speed")
-    axes[0].plot(t, _values(rows, "reference_speed_scale"), label="reference speed scale")
-    if "reference_governor_scale" in rows[0]:
-        axes[0].plot(t, _values(rows, "reference_governor_scale"), "--", label="governor cap")
-    axes[0].set_ylabel("m/s / scale")
-    axes[0].set_title("Reference And Tool Speed")
+    axes[0].set_ylabel("m/s")
+    axes[0].set_title("Tool Speed")
     axes[0].legend(fontsize=8)
 
     axes[1].plot(t, acceleration, label="payload acceleration")
@@ -977,7 +952,7 @@ def plot_smoothness(rows: Sequence[dict[str, float | int]], output_dir: Path, pa
     axes[3].plot(t, _values(rows, "clf_margin_W"), label="CLF margin")
     axes[3].axhline(0.0, color="#777777", linestyle="--", linewidth=1.0)
     axes[3].set_ylabel("J / W")
-    axes[3].set_title("MIESC Energy Shaping")
+    axes[3].set_title("MPC Tracking Energy")
     axes[3].legend(fontsize=8)
 
     axes[4].plot(t, spool_velocity, label="spool velocity")

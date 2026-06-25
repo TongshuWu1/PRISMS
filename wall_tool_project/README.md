@@ -27,56 +27,59 @@ script arguments when needed:
 ```text
 --mode qt       hybrid Matplotlib scene + PyQtGraph evaluation UI
 --mode tk       Tkinter fallback simulator UI
---mode ui       legacy pure Matplotlib simulator UI
+--mode ui       pure Matplotlib simulator UI
 --mode log      full logged controller session
 --mode quick    short smoke test
 ```
 
-The chosen controller is **MIESC**: a mixed-input energy-shaping controller for
-the hybrid reel/drone system:
+The chosen controller is `tool_head_nmpc`: a nonlinear model-predictive
+controller for tool-head path tracking with cable-efficient load sharing:
 
-- reel velocity regulates radial cable length and load support,
-- drone acceleration regulates tangential tracking and swing energy,
-- a CLF-style energy projection prevents the tangential command from injecting persistent swing,
-- boundary-aware corner smoothing keeps the cleaning reference inside the facade work bay,
-- contact-valid reference-governor speed caps before lane reversals,
-- acceleration/jerk-limited quintic segment timing,
-- pre-limit slowing from tracking, tool speed, and cable-geometry risk,
-- time-scaled reference velocity/acceleration so feed-forward terms match the slowed clock,
-- predictive setup routing for difficult transit targets,
-- reel acceleration limiting to avoid cable command bumps,
-- smooth facade trajectory for full larger-wall coverage,
-- drone force control for wall-plane swing and body torque,
-- non-zero cable-supported equilibrium tilt for hold.
-- 2.5D wall-normal contact dynamics for cleaning/inspection quality.
-- `6.0 m x 6.0 m` wall with a larger `4.2 m x 4.15 m` cleaning bay.
-- nominal no-wind facade mission speed of `0.30 m/s`, with local governor slowdowns.
+- the desired input is the actual path horizon, not a hidden moving reference
+  point,
+- the NMPC optimizes future payload position, velocity, attitude, cable length,
+  left/right drone thrust, cable tension, and reel speed,
+- hard constraints include wall bounds, attitude limits, drone thrust limits,
+  cable tension limits, reel speed/acceleration limits, and taut steel-cable
+  geometry,
+- the cable is treated as an inextensible unilateral support in the MPC branch:
+  it can pull when taut, cannot push, and cannot carry more than 100% vertical
+  support,
+- body tilt is not a commanded task; the solver tilts only when that improves
+  tracking or reduces drone effort over the lookahead horizon,
+- point clicks and dragged paths use the same sampled path horizon,
+- the Qt and Matplotlib UIs show the single chosen MPC prediction horizon,
+- smooth facade trajectory support remains available for larger-wall coverage,
+- 2.5D wall-normal contact dynamics remain available for cleaning/inspection
+  quality,
+- `6.0 m x 6.0 m` wall with a larger `4.2 m x 4.15 m` cleaning bay,
+- nominal no-wind facade mission speed of `0.16 m/s`.
 
 The live Qt UI lets you click a target, Shift-click to append a target, or hold
 the mouse button down and draw a smooth path for the robot to follow. PyQtGraph
 shows four fast evaluation plots: task validity, smoothness/energy,
-cable/actuator use, and reel/governor behavior. All limit plots use a normalized
+cable/actuator use, and reel behavior. All limit plots use a normalized
 `1.0` line so crossings are immediately meaningful.
 
-## Outputs
-
-Logged sessions are written under:
+Tune the selected controller in:
 
 ```text
-cable_hybrid_controller/output/sessions/
+cable_hybrid_controller/config.py
 ```
 
-Each run writes `session_log.csv`, `summary.json`, `report.md`, and diagnostic plots including a controller dashboard, coverage map, limit margins, smoothness plot, efficiency phase plots, and per-segment scorecard.
+That file contains mission geometry, contact limits, path speed, MPC horizon,
+solver settings, objective weights, cable/reel limits, and actuator limits.
 
-Current clean reference run:
+## Check Current Controller
 
 ```text
-cable_hybrid_controller/output/sessions/20260624_001654/
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode quick --duration 12
 ```
 
-Key metrics: `373.53 s` duration on the larger wall, `0.0496 m` RMS tracking
-error, `0.0769 m` max tracking error, full contact-gated coverage, `1.000`
-valid-contact fraction, `0.708` mean cable support fraction, `0.333` mean
-drone power ratio, mean swing energy `0.000026 J`, p95 body rate
-`0.206 rad/s`, p95 jerk `19.76 m/s^3`, p95 reel acceleration `0.380 m/s^2`,
-zero wind, zero slack, and zero thrust-limit activity.
+For a full generated report, run:
+
+```text
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode log
+```
+
+Generated output folders are intentionally not kept in this cleaned checkout.

@@ -2,10 +2,9 @@
 """Chosen controller configuration and simulation runner.
 
 This package is intentionally opinionated: it exposes one controller stack,
-not a benchmark menu. The chosen stack is a mixed-input energy-shaping
-controller: reel velocity regulates radial cable geometry, drone acceleration
-regulates tangential tracking and swing energy, and the reference governor
-keeps facade contact valid.
+not a benchmark menu. The chosen stack is a nonlinear MPC that tracks the
+tool-head path while optimizing drone thrust, cable tension, reel motion, and
+payload attitude over a finite horizon.
 """
 
 from __future__ import annotations
@@ -13,15 +12,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from cable_hybrid_controller.config import (
+    BEST_PATH_SPEED,
+    BEST_PLANNER,
+    CONTROLLER_OVERRIDES,
+    COVERAGE_CORNER_SPEED,
+    DEFAULT_SCENARIO_DURATION_S,
+    FACADE_MISSION_OVERRIDES,
+    MISSION_TRAJECTORY,
+    WORK_PLANNER,
+)
 from cable_hybrid_controller.facade import FacadeMission, cleaning_targets, configure_skyscraper_params
-from wall_tool_sim.wall_tool_ui import PLANNER_DIRECT, PLANNER_PREDICTIVE, SimParams, SimState, Vec2, WallToolSimulator
-
-
-BEST_PLANNER = PLANNER_PREDICTIVE
-WORK_PLANNER = PLANNER_DIRECT
-BEST_PATH_SPEED = 0.30
-COVERAGE_CORNER_SPEED = 0.075
-MISSION_TRAJECTORY = "coverage-smooth"
+from wall_tool_sim.wall_tool_ui import SimParams, SimState, Vec2, WallToolSimulator
 
 
 @dataclass(frozen=True)
@@ -34,11 +36,11 @@ class ControllerScenario:
 
 
 def default_scenario() -> ControllerScenario:
-    mission = FacadeMission()
+    mission = FacadeMission(**FACADE_MISSION_OVERRIDES)
     return ControllerScenario(
         name=mission.name,
         targets=cleaning_targets(mission),
-        duration_s=430.0,
+        duration_s=DEFAULT_SCENARIO_DURATION_S,
         description=mission.description,
         facade_mission=mission,
     )
@@ -49,22 +51,7 @@ def best_params(mission: FacadeMission | None = None) -> SimParams:
     return SimParams(
         **{
             **params.__dict__,
-            "control_law": "miesc",
-            "path_speed": BEST_PATH_SPEED,
-            "reference_accel_limit_mps2": 0.40,
-            "reference_jerk_limit_mps3": 2.1,
-            "reference_min_segment_duration_s": 0.65,
-            "reference_speed_min": 0.15,
-            "contact_governor_turn_min_scale": 0.18,
-            "contact_governor_geometry_efficiency": 0.62,
-            "contact_governor_geometry_min_scale": 0.28,
-            "contact_governor_tracking_ratio": 0.42,
-            "contact_governor_tracking_min_scale": 0.16,
-            "spool_accel_limit_mps2": 0.38,
-            "miesc_spool_accel_limit_mps2": 0.38,
-            "miesc_tangential_frequency_rad_s": 3.00,
-            "miesc_tangential_damping_ratio": 0.90,
-            "miesc_clf_decay_rate": 2.35,
+            **CONTROLLER_OVERRIDES,
         }
     )
 

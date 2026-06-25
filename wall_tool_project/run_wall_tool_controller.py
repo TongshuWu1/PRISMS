@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MODE,
         help=(
             "qt opens the hybrid Matplotlib/PyQtGraph UI, tk opens the Tk fallback, "
-            "ui opens the legacy Matplotlib UI, log writes a report, quick runs a smoke test."
+            "ui opens the Matplotlib UI, log writes a fresh report, quick runs a smoke test."
         ),
     )
     parser.add_argument(

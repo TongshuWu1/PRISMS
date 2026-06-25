@@ -165,7 +165,7 @@ class TkWallToolApp:
         self.metric_vars["energy"].set(energy_text)
         self.status_var.set(
             f"t {state.t:6.1f}s   wp {state.active_waypoints:2d}   "
-            f"ref {100.0 * state.reference_speed_scale:4.0f}%   "
+            f"mpc {1000.0 * state.mpc_solve_time_s:5.1f}ms   "
             f"error {state.tool_error:5.3f}m"
         )
 
@@ -346,7 +346,7 @@ class TkWallToolApp:
             (
                 ("body", "#c05621", lambda s: abs(s.angular_velocity) / max(self.sim.params.work_contact_angular_rate_limit_rad_s, 1e-9)),
                 ("cable", "#718096", lambda s: abs(s.theta_dot) / max(self.sim.params.work_contact_angular_rate_limit_rad_s, 1e-9)),
-                ("energy", "#2f855a", lambda s: s.swing_energy_J / max(self.sim.params.miesc_energy_plot_limit_J, 1e-9)),
+                ("energy", "#2f855a", lambda s: s.swing_energy_J / max(self.sim.params.mpc_energy_plot_limit_J, 1e-9)),
             ),
         )
         weight = max(self.sim.params.total_mass * self.sim.params.gravity, 1e-9)
@@ -364,12 +364,10 @@ class TkWallToolApp:
         )
         self._draw_plot(
             self.plot_reel,
-            "Reel And Governor",
+            "Reel Command",
             samples,
             (
                 ("spool", "#2563a8", lambda s: abs(s.spool_velocity_cmd) / max(self.sim.params.max_spool_speed, 1e-9)),
-                ("ref", "#4a5568", lambda s: s.reference_speed_scale),
-                ("gov", "#111111", lambda s: s.reference_governor_scale),
             ),
         )
 

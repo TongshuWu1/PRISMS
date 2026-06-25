@@ -72,8 +72,6 @@ class EvalSample:
     max_thrust: float
     spool_speed: float
     spool_accel: float
-    ref_scale: float
-    gov_scale: float
     left_thrust: float
     right_thrust: float
     desired_tension: float
@@ -206,12 +204,13 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             ("Est pos", "est_pos"),
             ("Est vel", "est_vel"),
             ("True pos", "true_pos"),
-            ("Desired pos", "desired_pos"),
-            ("Ref velocity", "ref_velocity"),
+            ("Path pos", "desired_pos"),
+            ("Path velocity", "ref_velocity"),
             ("Left input", "left_input"),
             ("Right input", "right_input"),
             ("Desired force", "desired_force"),
-            ("Governor", "governor"),
+            ("MPC solve", "mpc_solve"),
+            ("MPC status", "mpc_status"),
         )
         for index, (caption_text, key) in enumerate(telemetry_specs):
             row = index // 2
@@ -303,15 +302,16 @@ class QtEvalWindow(QtWidgets.QMainWindow):
 
         self.cable_line, = self.ax.plot([], [], color="#222222", linewidth=2.2, zorder=3, label="cable")
         self.trace_line, = self.ax.plot([], [], color="#2b7a78", linewidth=2.0, alpha=0.82, zorder=2, label="tool trace")
-        self.reference_trace_line, = self.ax.plot([], [], color="#8a5b22", linewidth=1.4, linestyle=":", zorder=2, label="reference trace")
-        self.pending_line, = self.ax.plot([], [], color="#777777", linewidth=1.3, linestyle="--", zorder=4, label="pending path")
+        self.reference_trace_line, = self.ax.plot([], [], color="#8a5b22", linewidth=1.4, linestyle=":", zorder=2, label="path sample trace")
+        self.pending_line, = self.ax.plot([], [], color="#777777", linewidth=1.3, linestyle="--", zorder=4, label="desired path")
+        self.mpc_prediction_line, = self.ax.plot([], [], color="#6b46c1", linewidth=1.8, linestyle="-.", zorder=6, label="MPC horizon")
         self.draw_preview_line, = self.ax.plot([], [], color="#f39c12", linewidth=2.8, alpha=0.9, zorder=9, label="drawn path")
-        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9, label="reference")
+        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9, label="_nolegend_", visible=False)
         self.target_point, = self.ax.plot([], [], marker="o", markerfacecolor="none", markeredgecolor="#8a5b22", markersize=8.0, mew=1.8, zorder=9, label="target")
         self.tool_point, = self.ax.plot([], [], marker="o", color="#8a4f00", markersize=6.0, zorder=13, label="tool")
         self.structure_line, = self.ax.plot([], [], color="#111111", linewidth=2.4, alpha=0.70, zorder=7, label="drone assembly")
         self.tool_label = self.ax.text(0.0, 0.0, "tool", color="#8a4f00", fontsize=8, zorder=14)
-        self.reference_label = self.ax.text(0.0, 0.0, "ref", color="#1f77b4", fontsize=8, zorder=14)
+        self.reference_label = self.ax.text(0.0, 0.0, "", color="#1f77b4", fontsize=8, zorder=14, visible=False)
         self.status_box = self.ax.text(
             0.01,
             0.99,
@@ -363,11 +363,9 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.power_curve = self.act_plot.plot(pen=pg.mkPen("#6b46c1", width=2), name="power")
         self.thrust_curve = self.act_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="thrust")
 
-        self.reel_plot = self._make_plot("Reel And Governor", row=5)
+        self.reel_plot = self._make_plot("Reel Command", row=5)
         self.spool_curve = self.reel_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="spool")
         self.spool_accel_curve = self.reel_plot.plot(pen=pg.mkPen("#c05621", width=2), name="reel accel")
-        self.ref_curve = self.reel_plot.plot(pen=pg.mkPen("#4a5568", width=2), name="ref")
-        self.gov_curve = self.reel_plot.plot(pen=pg.mkPen("#111111", width=2, style=QtCore.Qt.PenStyle.DotLine), name="gov")
 
     def _make_plot(self, title: str, row: int, normalized: bool = True) -> pg.PlotItem:
         plot = self.plot_layout.addPlot(row=row, col=0, title=title)
@@ -433,7 +431,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.metric_labels["energy"].setText(energy)
         self.status_label.setText(
             f"t {state.t:6.1f}s   wp {state.active_waypoints:2d}   "
-            f"ref {100.0 * state.reference_speed_scale:4.0f}%   error {state.tool_error:5.3f}m"
+            f"mpc {1000.0 * state.mpc_solve_time_s:5.1f}ms   error {state.tool_error:5.3f}m"
         )
         self.status_label.setStyleSheet("font-family: Consolas; color: #4b5850;")
         self.update_telemetry(state, speed)
@@ -455,7 +453,8 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         labels["left_input"].setText(f"{state.left_thrust:5.3f} N")
         labels["right_input"].setText(f"{state.right_thrust:5.3f} N")
         labels["desired_force"].setText(f"({state.desired_drone_force[0]:+.2f}, {state.desired_drone_force[1]:+.2f}) N")
-        labels["governor"].setText(f"ref {100.0 * state.reference_speed_scale:4.0f}% / cap {100.0 * state.reference_governor_scale:4.0f}%")
+        labels["mpc_solve"].setText(f"{1000.0 * state.mpc_solve_time_s:5.1f} ms  J {state.mpc_objective:7.2f}")
+        labels["mpc_status"].setText(state.mpc_status[:34] if state.mpc_status else "inactive")
 
     def update_scene(self) -> None:
         state = self.sim.history[-1]
@@ -482,6 +481,14 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         else:
             self.pending_line.set_data([], [])
 
+        if state.mpc_predicted_path:
+            self.mpc_prediction_line.set_data(
+                [point[0] for point in state.mpc_predicted_path],
+                [point[1] for point in state.mpc_predicted_path],
+            )
+        else:
+            self.mpc_prediction_line.set_data([], [])
+
         if self.drawing and self.draw_points:
             self.draw_preview_line.set_data([p[0] for p in self.draw_points], [p[1] for p in self.draw_points])
         else:
@@ -495,7 +502,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.payload_artist.update(state.payload, state.attitude)
         self.left_artist.update(left_center, state.attitude)
         self.right_artist.update(right_center, state.attitude)
-        self.reference_point.set_data([state.reference[0]], [state.reference[1]])
+        self.reference_point.set_data([], [])
         self.target_point.set_data([state.target[0]], [state.target[1]])
         self.tool_point.set_data([state.tool_head[0]], [state.tool_head[1]])
         self.tool_label.set_position((state.tool_head[0] + 0.05, state.tool_head[1] + 0.05))
@@ -504,7 +511,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             f"tracking {state.tool_error:.3f} m\n"
             f"contact {'valid' if state.contact_valid else ('invalid' if state.work_mode else 'off')}\n"
             f"support {100.0 * state.cable_vertical_force / max(params.total_mass * params.gravity, 1e-9):.0f}%\n"
-            f"governor {100.0 * state.reference_speed_scale:.0f}%"
+            f"mpc {1000.0 * state.mpc_solve_time_s:.1f} ms"
         )
         self._update_force_arrows(state, left_center, right_center)
         self.canvas.draw_idle()
@@ -552,8 +559,6 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.thrust_curve.setData(x, [sample.max_thrust for sample in samples])
         self.spool_curve.setData(x, [sample.spool_speed for sample in samples])
         self.spool_accel_curve.setData(x, [sample.spool_accel for sample in samples])
-        self.ref_curve.setData(x, [sample.ref_scale for sample in samples])
-        self.gov_curve.setData(x, [sample.gov_scale for sample in samples])
         y_values = [sample.payload_x for sample in samples] + [sample.reference_x for sample in samples]
         y_values += [sample.payload_z for sample in samples] + [sample.reference_z for sample in samples]
         y_min = min(y_values)
@@ -575,7 +580,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             last_state = self.sim.history[-2] if len(self.sim.history) >= 2 else state
             dt = max(state.t - last_state.t, 1e-9)
             spool_accel = abs(state.spool_velocity_cmd - last_state.spool_velocity_cmd) / (
-                dt * max(params.miesc_spool_accel_limit_mps2, 1e-9)
+                dt * max(params.spool_accel_limit_mps2, 1e-9)
             )
         self.eval_samples.append(
             EvalSample(
@@ -589,14 +594,12 @@ class QtEvalWindow(QtWidgets.QMainWindow):
                 contact_valid=1.0 if state.contact_valid else 0.0,
                 body_rate_ratio=abs(state.angular_velocity) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9),
                 cable_rate_ratio=abs(state.theta_dot) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9),
-                energy_ratio=state.swing_energy_J / max(params.miesc_energy_plot_limit_J, 1e-9),
+                energy_ratio=state.swing_energy_J / max(params.mpc_energy_plot_limit_J, 1e-9),
                 cable_support=state.cable_vertical_force / weight,
                 drone_power=(state.left_thrust**1.5 + state.right_thrust**1.5) / no_cable_power,
                 max_thrust=max(state.left_thrust, state.right_thrust) / max(params.max_thrust_per_drone, 1e-9),
                 spool_speed=abs(state.spool_velocity_cmd) / max(params.max_spool_speed, 1e-9),
                 spool_accel=spool_accel,
-                ref_scale=state.reference_speed_scale,
-                gov_scale=state.reference_governor_scale,
                 left_thrust=state.left_thrust / max(params.max_thrust_per_drone, 1e-9),
                 right_thrust=state.right_thrust / max(params.max_thrust_per_drone, 1e-9),
                 desired_tension=state.desired_cable_tension / max(params.max_spool_tension, 1e-9),

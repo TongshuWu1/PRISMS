@@ -4,25 +4,27 @@ This is the main controller package for the wall-tool project.
 
 The chosen architecture is:
 
-- **MIESC** mixed-input energy-shaping control,
-- reel velocity control for radial cable length and load support,
-- drone acceleration/force control for tangential tracking, swing damping, and body torque,
-- CLF-style tangential energy projection to avoid persistent cable-swing injection,
+- `tool_head_nmpc` nonlinear MPC over the wall-plane payload/cable/drone model,
+- direct optimization of left drone thrust, right drone thrust, cable tension,
+  and reel velocity,
+- prediction of payload position, velocity, tilt, angular rate, and paid-out
+  cable length over the horizon,
+- hard constraints for wall bounds, actuator limits, cable tension/support
+  limits, taut cable geometry, attitude limits, and reel speed/acceleration,
+- tool-head tracking is the primary objective; drone power, reel motion, input
+  rate, slack, and unnecessary tilt are secondary costs,
+- cable support is cheap but bounded, so the optimizer uses cable strength when
+  it reduces drone effort without exceeding 100% vertical support,
 - boundary-aware smooth coverage references that stay inside the facade work bay,
-- contact-valid cable-efficient reference governor for cleaning work mode,
 - acceleration/jerk-limited quintic timing for each coverage segment,
-- preview braking before lane-end reversals and poor cable geometry,
-- pre-limit speed/tracking governor before contact validity is lost,
-- time-scaled reference velocity/acceleration when the governor slows the trajectory clock,
-- lower reel acceleration limit to avoid cable command chatter,
-- direct facade-lane following inside the governed cleaning work mode,
-- predictive cable-aware routing for difficult transit/approach moves,
-- non-zero cable-supported equilibrium attitude for hold,
-- hover/hold allocation that prioritizes position damping over perfect attitude torque,
+- geometric path-horizon sampling instead of a dt-advanced moving reference point,
+- direct click-to-point targeting for interactive commands,
+- non-inverted attitude limits; body pose is an optimized internal variable,
+- inextensible unilateral steel-cable logic in the active NMPC branch,
 - 2.5D normal-to-wall contact dynamics for facade cleaning/inspection quality.
 - no nominal wind disturbance while tuning fast, smooth, cable-efficient motion.
 - `6.0 m x 6.0 m` wall with a larger `4.2 m x 4.15 m` cleaning bay.
-- nominal facade speed of `0.30 m/s`, with the governor reducing local speed only near contact-risk events.
+- nominal facade speed of `0.16 m/s`.
 
 The normal contact model is deliberately labeled 2.5D: the simulator still uses
 wall-plane cable dynamics for `x-z` motion, plus a separate normal `gap` state
@@ -44,7 +46,7 @@ Modes:
 --mode qt       hybrid Matplotlib scene + PyQtGraph evaluation UI
 --mode tk       Tkinter fallback controller UI
 --mode log      full logged controller session
---mode ui       legacy Matplotlib simulator
+--mode ui       Matplotlib simulator
 --mode quick    short smoke test
 ```
 
@@ -56,31 +58,9 @@ fast evaluation dashboard. Click the wall to send a single target, Shift-click
 to append a target, or hold the mouse button and drag to draw a smooth path. The
 path is committed when you release the mouse.
 
-## Outputs
+## Generated Reports
 
-Logged sessions are written under:
-
-```text
-cable_hybrid_controller/output/sessions/
-```
-
-Each session contains:
-
-- `session_log.csv`: time-series data for tracking, cable, reel, thrust, attitude, normal contact, efficiency, and MIESC energy terms.
-- `segment_summary.csv`: per-waypoint tracking, power, cable support, contact force, and valid-contact fraction.
-- `summary.json`: numeric performance summary.
-- `report.md`: short readable report with the main metrics and controller settings.
-- `tracking.png`: wall path and tracking error.
-- `actuation.png`: tension, spool velocity, thrust, and allocation residual.
-- `attitude_cable.png`: body attitude, cable angle, and cable/spool lengths.
-- `efficiency.png`: cable support, drone power proxy, reference speed, and reel-in power.
-- `facade_work.png`: work-region path, contact force, normal gap/actuator, valid contact, blur risk, and disturbance channels.
-- `controller_dashboard.png`: path validity, scorecard, tracking-error CDF, limit ratios, efficiency, and invalid-contact reasons.
-- `coverage_map.png`: contact-gated covered cells and spatial locations where valid contact was lost.
-- `limit_margins.png`: normalized tracking, speed, body-rate, thrust, allocation, tension, and reel-smoothness margins.
-- `smoothness.png`: reference speed, payload acceleration/jerk, body/cable rate, MIESC energy shaping, and reel acceleration.
-- `efficiency_phase.png`: cable geometry, load sharing, reel work, and actuator-feasibility phase plots.
-- `segment_scorecard.png`: per-segment duration, tracking error, valid contact, cable support, and drone power.
+Use `--mode log` only when you want to generate fresh reports. Generated output folders are intentionally not kept in this cleaned checkout.
 
 ## What To Watch
 
@@ -88,88 +68,47 @@ Each session contains:
 - Cable tension should stay positive and smooth.
 - Cable support fraction should be meaningful; otherwise the drones are doing too much work.
 - Max thrust fraction near `1.0` means the path is too aggressive or geometry is poor.
-- Allocation residual means the requested force/torque combination is not fully feasible.
-- Slack, tension saturation, high allocation residual, and invalid contact are controller failure modes.
+- MPC status should normally be `Solve_Succeeded`; a held previous feasible
+  command means the last nonlinear solve failed.
+- Slack, tension saturation, high MPC solve time, and invalid contact are
+  controller failure modes.
 - Coverage fraction is contact-gated; it should not look good unless the tool is actually in usable wall contact.
 - A faster run can be tested by changing `BEST_PATH_SPEED`, but treat contact validity and coverage as primary cleaning metrics.
 
-## Publishable Controller Idea
+## Active NMPC Solver
 
-Working name: **MIESC**, a Mixed-Input Energy-Shaping Controller.
-
-The idea is to respect the different actuator types instead of hiding them
-inside one Cartesian PID loop. The reel remains a velocity-controlled
-cable-length actuator. The drone pair remains an acceleration/force-controlled
-wall-plane actuator. MIESC splits the task in cable polar coordinates:
-
-- radial cable-length error goes to the reel velocity policy,
-- tangential wall-plane error goes to the drone acceleration command,
-- a CLF-style storage function penalizes swing/tracking energy,
-- a contact-valid governor slows the reference before cleaning constraints are violated.
-
-The governor modulates the trajectory clock using task constraints:
-
-- previewed lane-end turn risk from the queued waypoint geometry,
-- cable vertical-efficiency risk near upper facade corners,
-- pre-limit tracking-error ratio,
-- pre-limit tool-speed ratio for inspection blur/contact validity.
-
-This is intentionally lighter than full nonlinear MPC, but it is MPC-like in
-spirit: it anticipates constraint violations and slows the reference before the
-low-level hybrid system saturates. The nominal reference itself is also bounded:
-quintic segment duration is chosen from speed, acceleration, and jerk limits, so
-the command is feasible before any corrective governor action. The key
-implementation detail is that reference velocity and acceleration are time-scaled
-with the slowed trajectory clock, so feed-forward terms stay consistent.
-
-The current result is the important research signal: compared with the previous
-clean large-wall run, MIESC keeps full contact-gated coverage and full contact
-validity while increasing mean cable support from `0.693` to `0.708`, reducing
-mean drone power ratio from `0.355` to `0.333`, reducing p95 reel acceleration
-from `0.500 m/s^2` to `0.380 m/s^2`, and keeping RMS tracking essentially equal
-at `0.0496 m`.
-
-## Current Reference Run
-
-Latest clean logged run:
+The active controller uses CasADi/IPOPT through:
 
 ```text
-output/sessions/20260624_001654/
+cable_hybrid_controller/mpc/
 ```
 
-Key numbers:
+At each receding-horizon solve, the simulator samples the desired path over the
+future horizon and passes the measured state
+`[x, z, vx, vz, attitude, attitude_rate, cable_length]` to the solver. The first
+optimized command is applied to the plant:
 
-- wall size: `6.0 m x 6.0 m`
-- cleaning bay: `x = [-2.10, 2.10] m`, `z = [1.10, 5.25] m`
-- trajectory: `coverage-smooth`
-- control law: `miesc`
-- path speed: `0.300 m/s`
-- reference acceleration limit: `0.400 m/s^2`
-- reference jerk limit: `2.100 m/s^3`
-- duration: `373.53 s`
-- final error: `0.0102 m`
-- max error: `0.0769 m`
-- RMS error: `0.0496 m`
-- 95th-percentile error: `0.0677 m`
-- max payload speed: `0.3381 m/s`
-- 95th-percentile body rate: `0.206 rad/s`
-- 95th-percentile payload jerk: `19.76 m/s^3`
-- mean swing energy: `0.000026 J`
-- 95th-percentile swing energy: `0.000127 J`
-- contact-gated coverage: `1.000`
-- contact-valid fraction: `1.000`
-- mean contact force: `0.550 N`
-- mean contact quality: `1.000`
-- mean cable support fraction: `0.708`
-- mean drone power ratio: `0.333`
-- max thrust fraction: `0.776`
-- mean absolute spool velocity: `0.0681 m/s`
-- 95th-percentile spool acceleration: `0.380 m/s^2`
-- max wind force: `0.000 N`
-- thrust-limit active fraction: `0.0000`
-- slack fraction: `0.0000`
+```text
+[left_thrust, right_thrust, cable_tension, reel_velocity]
+```
 
-Main limitation: the normal contact axis is currently a proxy actuator. The next
-serious research step is a constrained 3D allocation/MPC layer that accounts for
-drone attitude, normal force authority, cable tension, and facade contact limits
-together.
+The UI draws the chosen predicted path as a single purple dash-dot horizon.
+The active path has one chosen prediction horizon and no rollout cloud.
+
+Tune the selected controller in:
+
+```text
+cable_hybrid_controller/config.py
+```
+
+That file contains mission geometry, contact limits, path speed, planner
+choice, MPC horizon, objective weights, cable/reel limits, actuator limits, and
+solver tolerances.
+
+## Check Current Controller
+
+```text
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode quick --duration 12
+```
+
+Use `--mode log` only when you want to generate fresh reports.

@@ -3,8 +3,8 @@
 
 The model is intentionally small, but it is not just a drawing. The suspended
 system is integrated as a Cartesian point mass under gravity, finite cable
-tension, and two bounded tilted drone thrust axes. The spool commands cable
-velocity and builds cable tension through a unilateral spring-damper cable.
+tension, and two bounded tilted drone thrust axes. The controller is a nonlinear
+MPC with an inextensible unilateral cable model.
 Facade work adds a separate normal-to-wall gap/contact state.
 Click any point on the wall to command a smooth straight-line move, or enable
 append mode to queue a smooth multi-waypoint trajectory.
@@ -37,12 +37,11 @@ except ModuleNotFoundError as exc:
         "  python -m pip install -r requirements.txt"
     ) from exc
 
-from cable_hybrid_controller.miesc import MixedInputEnergyCommand, mixed_input_energy_command
+from cable_hybrid_controller.mpc import MPCConfig, MPCReferenceHorizon, MPCSolution, WallToolNMPC
 
 
 Vec2 = tuple[float, float]
 Vec3 = tuple[float, float, float]
-VecN = tuple[float, ...]
 
 DEFAULT_GRAVITY = 9.80665
 PLANNER_DIRECT = "direct"
@@ -157,22 +156,6 @@ def convex_hull(points: Sequence[Vec2]) -> list[Vec2]:
 
 def wrap_angle(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
-
-
-def dotn(a: Sequence[float], b: Sequence[float]) -> float:
-    return sum(float(x) * float(y) for x, y in zip(a, b))
-
-
-def addn(a: Sequence[float], b: Sequence[float]) -> VecN:
-    return tuple(float(x) + float(y) for x, y in zip(a, b))
-
-
-def subn(a: Sequence[float], b: Sequence[float]) -> VecN:
-    return tuple(float(x) - float(y) for x, y in zip(a, b))
-
-
-def scalen(vector: Sequence[float], gain: float) -> VecN:
-    return tuple(float(value) * gain for value in vector)
 
 
 @dataclass(frozen=True)
@@ -414,129 +397,57 @@ class SimParams:
     payload_hex_radius: float = 0.114
     module_gap: float = 0.0
     max_thrust_per_drone: float = 0.150 * DEFAULT_GRAVITY
-    drone_accel_kp: float = 18.0
-    drone_accel_kd: float = 7.5
-    radial_accel_kp: float = 10.0
-    radial_accel_kd: float = 6.5
-    tangential_accel_kp: float = 18.0
-    tangential_accel_kd: float = 7.5
-    pendulum_theta_kp: float = 10.0
-    pendulum_theta_kd: float = 8.0
-    max_pendulum_theta_ddot: float = 3.2
-    pendulum_radial_force_penalty: float = 0.18
-    control_law: str = "miesc"
-    miesc_radial_frequency_rad_s: float = 1.35
-    miesc_radial_damping_ratio: float = 1.15
-    miesc_tangential_frequency_rad_s: float = 2.15
-    miesc_tangential_damping_ratio: float = 1.20
-    miesc_clf_decay_rate: float = 2.60
-    miesc_reel_length_kp: float = 1.35
-    miesc_reel_velocity_kd: float = 0.30
-    miesc_reel_encoder_kp: float = 0.45
-    miesc_reel_tension_kv: float = 0.075
-    miesc_reel_accel_ff: float = 0.025
-    miesc_spool_accel_limit_mps2: float = 0.38
-    miesc_energy_plot_limit_J: float = 0.015
-    move_cable_torque_comp_fraction: float = 1.0
-    max_radial_accel: float = 3.6
-    max_tangential_accel: float = 2.8
-    max_cartesian_accel: float = 4.2
-    spool_velocity_kp: float = 3.4
-    spool_velocity_kd: float = 0.55
-    spool_encoder_kp: float = 0.75
-    spool_radial_accel_ff: float = 0.06
-    spool_accel_limit_mps2: float = 0.50
-    drone_radial_accel_fraction: float = 0.45
-    drone_radial_rescue_error_m: float = 0.08
-    drone_radial_rescue_full_error_m: float = 0.24
-    cable_first_assist_fraction: float = 0.0
-    max_extra_cable_tension: float = 0.45
-    cable_support_fraction_target: float = 0.40
-    max_cable_side_load_fraction: float = 0.35
-    cable_tension_feedforward_fraction: float = 0.45
+
+    # The runtime controller is nonlinear MPC only. This name is kept for
+    # reports and logs so runs state the selected controller explicitly.
+    control_law: str = "tool_head_nmpc"
+
+    # NMPC horizon, solver, constraints, and objective weights.
+    mpc_horizon_steps: int = 18
+    mpc_horizon_dt: float = 0.080
+    mpc_control_period_s: float = 0.040
+    mpc_attitude_limit_rad: float = 1.05
+    mpc_slack_limit_m: float = 0.012
+    mpc_tracking_position_weight: float = 260.0
+    mpc_tracking_velocity_weight: float = 22.0
+    mpc_terminal_position_weight: float = 520.0
+    mpc_terminal_velocity_weight: float = 36.0
+    mpc_drone_effort_weight: float = 0.42
+    mpc_cable_effort_weight: float = 0.018
+    mpc_reel_speed_weight: float = 0.050
+    mpc_input_rate_weight: float = 0.030
+    mpc_attitude_rate_weight: float = 0.45
+    mpc_attitude_weight: float = 0.025
+    mpc_slack_weight: float = 180.0
+    mpc_solver_max_iter: int = 90
+    mpc_solver_tolerance: float = 1e-5
+    mpc_energy_plot_limit_J: float = 0.015
+
+    # Cable and reel limits used by the active inextensible-cable plant.
+    max_cable_support_fraction: float = 1.0
     max_spool_speed: float = 0.58
-    cable_stiffness: float = 260.0
-    cable_damping: float = 2.0
-    max_cable_damping_force: float = 1.2
+    spool_accel_limit_mps2: float = 0.80
     cable_taut_band: float = 0.006
     max_spool_tension: float = 24.0
-    spool_tension_kv: float = 0.16
-    tension_feedback_pay_out_deadband: float = 0.035
-    tension_feedback_pay_out_release: float = 0.180
     min_tracking_tension: float = 0.10
-    lower_cable_support_fraction: float = 0.16
-    cable_support_floor_fraction: float = 0.28
-    lift_cable_support_fraction: float = 0.78
-    hold_cable_support_fraction: float = 0.72
-    radial_motion_deadband: float = 0.018
-    radial_length_deadband: float = 0.020
-    slack_recovery_spool_speed: float = 0.26
-    slack_pay_out_speed: float = 0.040
-    gravity_lowering_payout_speed: float = 0.22
-    hold_max_spool_speed: float = 0.035
-    hold_spool_deadband_m: float = 0.028
-    hold_spool_velocity_deadband_mps: float = 0.075
-    hold_spool_tension_deadband_N: float = 0.35
-    hold_spool_length_kp: float = 0.45
-    hold_spool_velocity_kd: float = 0.12
-    hold_spool_tension_kv: float = 0.030
-    hold_spool_accel_limit_mps2: float = 0.18
-    taut_payout_buffer: float = 0.002
-    cable_tension_cost: float = 0.004
-    cable_geometry_cost: float = 4.0
-    drone_thrust_cost: float = 0.080
     min_cable_vertical_efficiency: float = 0.08
-    tension_filter_tau: float = 0.18
-    max_tension_target_rate: float = 10.0
-    reference_speed_min: float = 0.24
-    reference_slowdown_rate: float = 2.5
-    reference_recovery_rate: float = 1.1
-    tracking_error_slowdown_m: float = 0.075
-    tracking_error_full_slow_m: float = 0.160
-    contact_governor_enabled: bool = True
-    contact_governor_turn_distance_m: float = 1.20
-    contact_governor_turn_min_scale: float = 0.22
-    contact_governor_turn_alignment: float = 0.35
-    contact_governor_boundary_margin_m: float = 0.24
-    contact_governor_geometry_efficiency: float = 0.38
-    contact_governor_geometry_min_scale: float = 0.58
-    contact_governor_tracking_ratio: float = 0.50
-    contact_governor_tracking_min_scale: float = 0.30
-    contact_governor_speed_ratio: float = 0.68
-    contact_governor_speed_min_scale: float = 0.30
-    thrust_slowdown_fraction: float = 0.82
-    residual_slowdown_fraction: float = 0.020
-    geometry_slowdown_efficiency: float = 0.35
     min_control_cable_length: float = 0.62
-    move_attitude_kp: float = 0.0
-    move_attitude_kd: float = 1.40
-    move_max_attitude_torque: float = 0.040
-    hold_attitude_kp: float = 35.0
-    hold_attitude_kd: float = 8.0
-    hold_max_attitude_torque: float = 0.06
-    hold_equilibrium_tilt_limit_rad: float = math.radians(58.0)
-    attitude_hold_error_m: float = 0.06
-    attitude_hold_speed_mps: float = 0.08
-    attitude_hold_release_error_m: float = 0.28
-    attitude_hold_release_speed_mps: float = 0.45
-    hold_position_kp: float = 12.0
-    hold_position_kd: float = 6.0
-    hold_max_position_accel: float = 2.8
-    hold_tension_search_steps: int = 32
-    hold_attitude_search_steps: int = 12
-    hold_efficiency_residual_weight: float = 80.0
-    hold_efficiency_tilt_weight: float = 0.012
-    rotational_damping: float = 0.010
-    torque_residual_length_scale: float = 0.35
-    hold_torque_residual_length_scale: float = 1.20
-    shallow_hold_torque_residual_length_scale: float = 1.80
-    shallow_hold_torque_scale_efficiency: float = 0.75
+
+    # Planner cost scales. These are route-selection terms, not a controller.
+    max_tangential_accel: float = 2.8
+
+    # Payload attitude dynamics. Attitude is chosen by the NMPC optimizer.
+    rotational_damping: float = 0.090
     nominal_attitude_rad: float = 0.0
-    path_speed: float = 0.32
-    reference_accel_limit_mps2: float = 0.34
-    reference_jerk_limit_mps3: float = 2.5
-    reference_min_segment_duration_s: float = 0.70
+
+    # Desired path generation.
+    path_speed: float = 0.16
+    reference_accel_limit_mps2: float = 0.24
+    reference_jerk_limit_mps3: float = 1.2
+    reference_min_segment_duration_s: float = 0.90
     waypoint_tolerance: float = 0.012
+
+    # Geometry and disturbances.
     min_cable_length: float = 0.10
     max_cable_length: float = 7.0
     initial_payload: Vec2 = (0.0, 2.00)
@@ -547,6 +458,9 @@ class SimParams:
     wind_gust_period_s: float = 11.0
     wind_gust_vertical_fraction: float = 0.35
     edge_wind_gain: float = 0.0
+
+    # Normal-to-wall contact and work-quality checks. The planar controller still
+    # tracks the desired x-z path; this state models facade standoff/force.
     normal_contact_enabled: bool = False
     normal_standoff_m: float = 0.10
     normal_initial_gap_m: float = 0.10
@@ -794,8 +708,6 @@ class SimState:
     measured_tool_error: float
     spool_velocity_cmd: float
     drone_accel_cmd: float
-    reference_speed_scale: float
-    reference_governor_scale: float
     desired_cable_tension: float
     measured_cable_length: float
     measured_tension: float
@@ -837,6 +749,13 @@ class SimState:
     swing_power_W: float
     clf_margin_W: float
     clf_projected_accel_m_s2: float
+    mpc_predicted_path: tuple[Vec2, ...] = ()
+    mpc_predicted_attitudes: tuple[float, ...] = ()
+    mpc_predicted_tensions: tuple[float, ...] = ()
+    mpc_predicted_spool_speeds: tuple[float, ...] = ()
+    mpc_status: str = ""
+    mpc_solve_time_s: float = 0.0
+    mpc_objective: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -867,26 +786,6 @@ def solve3(matrix: Sequence[Sequence[float]], rhs: Sequence[float]) -> tuple[flo
             for col in range(pivot, 4):
                 rows[row][col] -= scale * rows[pivot][col]
     return rows[0][3], rows[1][3], rows[2][3]
-
-
-def solve_linear_system(matrix: Sequence[Sequence[float]], rhs: Sequence[float]) -> tuple[float, ...]:
-    size = len(rhs)
-    rows = [[float(matrix[row][col]) for col in range(size)] + [float(rhs[row])] for row in range(size)]
-    for pivot in range(size):
-        best = max(range(pivot, size), key=lambda row: abs(rows[row][pivot]))
-        rows[pivot], rows[best] = rows[best], rows[pivot]
-        pivot_value = rows[pivot][pivot]
-        if abs(pivot_value) < 1e-12:
-            raise ValueError("singular allocation solve")
-        for col in range(pivot, size + 1):
-            rows[pivot][col] /= pivot_value
-        for row in range(size):
-            if row == pivot:
-                continue
-            scale = rows[row][pivot]
-            for col in range(pivot, size + 1):
-                rows[row][col] -= scale * rows[pivot][col]
-    return tuple(rows[row][size] for row in range(size))
 
 
 def quintic_coefficients(
@@ -1106,8 +1005,13 @@ class ReferenceTrajectory:
         self.goals: list[Vec2] = []
         self.segments: list[QuinticSegment] = []
         self.segment_time = 0.0
+        self.geometric_progress_m = 0.0
+        self._path_sample_cache: list[Vec2] | None = None
         self.final_target = initial_position
         self.mode = "hold"
+
+    def _invalidate_path_cache(self) -> None:
+        self._path_sample_cache = None
 
     def reset(self, position: Vec2) -> None:
         self.position = position
@@ -1116,6 +1020,8 @@ class ReferenceTrajectory:
         self.goals.clear()
         self.segments.clear()
         self.segment_time = 0.0
+        self.geometric_progress_m = 0.0
+        self._invalidate_path_cache()
         self.final_target = position
         self.mode = "hold"
 
@@ -1126,6 +1032,8 @@ class ReferenceTrajectory:
         self.goals = [goal]
         self.final_target = goal
         self.mode = "straight"
+        self.geometric_progress_m = 0.0
+        self._invalidate_path_cache()
         duration = self._segment_duration(start, goal)
         self.segments = [
             QuinticSegment.build(
@@ -1148,6 +1056,8 @@ class ReferenceTrajectory:
         self.goals.append(goal)
         self.final_target = goal
         self.mode = "smooth"
+        self.geometric_progress_m = 0.0
+        self._invalidate_path_cache()
         self._rebuild_smooth_segments()
 
     def append_stop_waypoint(self, start: Vec2, goal: Vec2) -> None:
@@ -1162,6 +1072,8 @@ class ReferenceTrajectory:
         self.goals.append(goal)
         self.final_target = goal
         self.mode = "stop"
+        self.geometric_progress_m = 0.0
+        self._invalidate_path_cache()
         duration = self._segment_duration(segment_start, goal)
         self.segments.append(
             QuinticSegment.build(
@@ -1182,6 +1094,8 @@ class ReferenceTrajectory:
         self.goals = [goals[-1]] if goals else []
         self.final_target = self.goals[-1] if self.goals else start
         self.mode = "draw"
+        self.geometric_progress_m = 0.0
+        self._invalidate_path_cache()
         points = [start, *goals]
         self.segments = [SampledPathSegment.build(points, self.speed)] if len(points) >= 2 else []
         self.segment_time = 0.0
@@ -1194,6 +1108,8 @@ class ReferenceTrajectory:
         self.final_target = self.goals[-1] if self.goals else start
         self.mode = "coverage-smooth"
         self.segment_time = 0.0
+        self.geometric_progress_m = 0.0
+        self._invalidate_path_cache()
         if not goals:
             self.segments = []
             return
@@ -1243,6 +1159,7 @@ class ReferenceTrajectory:
             self.acceleration = sample.acceleration
             remaining_dt -= max(0.0, time_left)
             self.segments.pop(0)
+            self._invalidate_path_cache()
             if self.goals:
                 self.goals.pop(0)
             self.segment_time = 0.0
@@ -1255,6 +1172,62 @@ class ReferenceTrajectory:
             self.final_target = self.position
             self.mode = "hold"
         return self.state()
+
+    def geometric_reference(self, tool_position: Vec2, tool_velocity: Vec2, dt: float) -> ReferenceState:
+        """Path-following reference from closest tool-head projection, not time advance."""
+
+        if not self.segments:
+            self.velocity = (0.0, 0.0)
+            self.acceleration = (0.0, 0.0)
+            return self.state()
+
+        samples = self._path_samples()
+        projected_point, _tangent, _remaining_length, path_progress = self._project_tool_to_path(tool_position, samples)
+        projection_error = distance2(tool_position, projected_point)
+        capture_radius = max(0.12, 6.0 * self.tolerance)
+        if projection_error <= capture_radius and path_progress > self.geometric_progress_m:
+            # Prevent projection from jumping across nearby drawn-path segments.
+            max_progress_step = max(0.004, 3.0 * self.speed * max(dt, 0.0))
+            self.geometric_progress_m = min(path_progress, self.geometric_progress_m + max_progress_step)
+        projection, tangent, remaining_length = self._sample_path_at_progress(samples, self.geometric_progress_m)
+        tracking_error = distance2(tool_position, projection)
+        speed = self.speed
+        slowdown_distance = self._geometric_slowdown_distance(speed)
+        speed_scale = clamp(remaining_length / max(slowdown_distance, 1e-9), 0.0, 1.0)
+        target_speed = speed * speed_scale
+        if tracking_error > capture_radius or remaining_length <= self.tolerance:
+            target_speed = 0.0
+
+        self.position = projection
+        self.velocity = scale2(tangent, target_speed)
+        self.acceleration = (0.0, 0.0)
+
+        completion_distance = max(3.0 * self.tolerance, 0.050)
+        complete = (
+            remaining_length <= completion_distance
+            and distance2(tool_position, self.final_target) <= completion_distance
+            and math.hypot(tool_velocity[0], tool_velocity[1]) <= 0.075
+        )
+        if complete:
+            self.position = self.final_target
+            self.velocity = (0.0, 0.0)
+            self.acceleration = (0.0, 0.0)
+            self.goals.clear()
+            self.segments.clear()
+            self.segment_time = 0.0
+            self._invalidate_path_cache()
+            self.mode = "hold"
+            return self.state()
+
+        return ReferenceState(
+            position=self.position,
+            velocity=self.velocity,
+            acceleration=self.acceleration,
+            final_target=self.final_target,
+            active_target=self.goals[0] if self.goals else self.final_target,
+            active=True,
+            waypoint_count=max(1, len(self.goals)),
+        )
 
     def state(self) -> ReferenceState:
         return ReferenceState(
@@ -1279,6 +1252,95 @@ class ReferenceTrajectory:
                 t = start_time + u * (segment.duration - start_time)
                 points.append(segment.sample(t).position)
         return points
+
+    def _path_samples(self) -> list[Vec2]:
+        if not self.segments:
+            return [self.position]
+        if self._path_sample_cache is not None:
+            return self._path_sample_cache
+
+        points: list[Vec2] = []
+        for segment in self.segments:
+            if isinstance(segment, SampledPathSegment):
+                segment_points = list(segment.samples)
+            else:
+                sample_count = max(12, int(segment.duration / 0.06))
+                segment_points = [segment.sample(segment.duration * index / sample_count).position for index in range(sample_count + 1)]
+            for point in segment_points:
+                if not points or distance2(point, points[-1]) > 1e-6:
+                    points.append(point)
+        self._path_sample_cache = points if len(points) >= 2 else [self.position, self.final_target]
+        return self._path_sample_cache
+
+    def _sample_path_at_progress(self, samples: Sequence[Vec2], progress_m: float) -> tuple[Vec2, Vec2, float]:
+        if len(samples) < 2:
+            return samples[0], (1.0, 0.0), 0.0
+
+        total_length = sum(distance2(samples[index], samples[index + 1]) for index in range(len(samples) - 1))
+        progress_m = clamp(progress_m, 0.0, total_length)
+        distance_before = 0.0
+        for index in range(len(samples) - 1):
+            start = samples[index]
+            end = samples[index + 1]
+            segment_length = distance2(start, end)
+            if segment_length <= 1e-9:
+                continue
+            if progress_m < distance_before + segment_length or index == len(samples) - 2:
+                local = clamp((progress_m - distance_before) / segment_length, 0.0, 1.0)
+                tangent = normalize2(sub2(end, start))
+                position = add2(start, scale2(sub2(end, start), local))
+                return position, tangent, max(0.0, total_length - progress_m)
+            distance_before += segment_length
+
+        tangent = normalize2(sub2(samples[-1], samples[-2]))
+        return samples[-1], tangent, 0.0
+
+    def _project_tool_to_path(self, tool_position: Vec2, samples: Sequence[Vec2]) -> tuple[Vec2, Vec2, float, float]:
+        best_projection = samples[0]
+        best_tangent = normalize2(sub2(samples[min(1, len(samples) - 1)], samples[0]))
+        best_distance_squared = math.inf
+        best_remaining_length = 0.0
+        best_progress = 0.0
+        total_length = 0.0
+        segment_lengths: list[float] = []
+        for index in range(len(samples) - 1):
+            segment_length = distance2(samples[index], samples[index + 1])
+            segment_lengths.append(segment_length)
+            total_length += segment_length
+
+        distance_before = 0.0
+        for index, segment_length in enumerate(segment_lengths):
+            if segment_length <= 1e-9:
+                continue
+            start = samples[index]
+            end = samples[index + 1]
+            delta = sub2(end, start)
+            local = clamp(dot2(sub2(tool_position, start), delta) / (segment_length * segment_length), 0.0, 1.0)
+            projection = add2(start, scale2(delta, local))
+            error = sub2(tool_position, projection)
+            distance_squared = dot2(error, error)
+            progress = distance_before + local * segment_length
+            if (
+                distance_squared < best_distance_squared - 1e-12
+                or abs(distance_squared - best_distance_squared) <= 1e-12
+                and progress > best_progress
+            ):
+                best_distance_squared = distance_squared
+                best_projection = projection
+                best_tangent = scale2(delta, 1.0 / segment_length)
+                best_progress = progress
+                best_remaining_length = max(0.0, total_length - progress)
+            distance_before += segment_length
+
+        if abs(best_tangent[0]) + abs(best_tangent[1]) <= 1e-9:
+            best_tangent = (1.0, 0.0)
+        return best_projection, normalize2(best_tangent), best_remaining_length, best_progress
+
+    def _geometric_slowdown_distance(self, speed: float) -> float:
+        dynamic_distance = 0.0
+        if math.isfinite(self.accel_limit) and self.accel_limit > 1e-9:
+            dynamic_distance = speed * speed / (2.0 * self.accel_limit)
+        return max(0.12, 1.4 * dynamic_distance, 2.0 * self.tolerance)
 
     def _rebuild_smooth_segments(self) -> None:
         points = [self.position, *self.goals]
@@ -1374,6 +1436,10 @@ class WallToolSimulator:
             jerk_limit=params.reference_jerk_limit_mps3,
             min_segment_duration=params.reference_min_segment_duration_s,
         )
+        self._nmpc: WallToolNMPC | None = None
+        self._nmpc_next_solve_t = 0.0
+        self._nmpc_last_solution: MPCSolution | None = None
+        self._nmpc_previous_command = (0.0, 0.0, 0.0, 0.0)
         self.reset()
 
     def reset(self) -> None:
@@ -1390,24 +1456,21 @@ class WallToolSimulator:
         self.angular_velocity = 0.0
         self.angular_acceleration = 0.0
         initial_distance = self._point_to_polar(self.default_target)[1]
-        initial_tension = self._static_cable_tension_target(self.default_target)
+        initial_tension = 0.0
         self.cable_length = clamp(
-            initial_distance - initial_tension / max(self.params.cable_stiffness, 1e-9),
+            initial_distance,
             self.params.min_cable_length,
             self.params.max_cable_length,
         )
-        self.cable_stretch = initial_distance - self.cable_length
+        self.cable_stretch = 0.0
         self.cable_slack = False
         self.cable_tension_saturated = False
-        self.reference_speed_scale = 1.0
-        self.reference_governor_scale = 1.0
-        self.hold_latched = False
-        self._hold_equilibrium_cache: (
-            tuple[tuple[float, float, float], tuple[float, float, tuple[float, float], float]] | None
-        ) = None
         self.filtered_cable_tension_target = initial_tension
         self.actual_tension = initial_tension
         self.last_spool_velocity_cmd = 0.0
+        self._nmpc_next_solve_t = 0.0
+        self._nmpc_last_solution = None
+        self._nmpc_previous_command = (0.0, 0.0, initial_tension, 0.0)
         self.measured_payload = self.position
         self.estimated_payload_velocity = (0.0, 0.0)
         self.measured_theta = 0.0
@@ -1468,23 +1531,18 @@ class WallToolSimulator:
         raise ValueError(f"Unknown planner '{planner}'. Choose one of: {', '.join(PLANNER_CHOICES)}")
 
     def set_target(self, point: Vec2, planner: str = PLANNER_DIRECT) -> None:
-        self.hold_latched = False
-        waypoints = self.planned_waypoints(point, planner)
         start = self._payload_from_state()
-        if len(waypoints) == 1:
-            self.trajectory.command_straight(start, waypoints[0])
-        else:
-            self.trajectory.reset(start)
-            for waypoint in waypoints:
-                self.trajectory.append_smooth_waypoint(start, waypoint)
+        waypoints = self.planned_waypoints(point, planner)
+        # Point clicks use the same geometric path representation as drag paths.
+        # With the direct planner this is a single segment to the clicked point,
+        # not a setup waypoint or dt-advanced target.
+        self.trajectory.command_smooth_path(start, waypoints)
 
     def append_target(self, point: Vec2, planner: str = PLANNER_DIRECT) -> None:
-        self.hold_latched = False
         for waypoint in self.planned_waypoints(point, planner):
             self.trajectory.append_smooth_waypoint(self._payload_from_state(), waypoint)
 
     def append_stop_target(self, point: Vec2, planner: str = PLANNER_DIRECT) -> None:
-        self.hold_latched = False
         for waypoint in self.planned_waypoints(point, planner):
             self.trajectory.append_stop_waypoint(self._payload_from_state(), waypoint)
 
@@ -1492,14 +1550,12 @@ class WallToolSimulator:
         clamped_points = [self._clamp_wall_point(point) for point in points]
         if not clamped_points:
             return
-        self.hold_latched = False
         self.trajectory.command_smooth_path(self._payload_from_state(), clamped_points)
 
     def set_corner_smooth_path(self, points: Sequence[Vec2], corner_speed: float) -> None:
         clamped_points = [self._clamp_wall_point(point) for point in points]
         if not clamped_points:
             return
-        self.hold_latched = False
         self.trajectory.command_corner_smooth_path(self._payload_from_state(), clamped_points, corner_speed)
 
     def clear_trajectory(self) -> None:
@@ -1570,13 +1626,6 @@ class WallToolSimulator:
     def _payload_velocity_from_state(self) -> Vec2:
         return self.velocity
 
-    def _cable_damping_force(self, stretch_rate: float) -> float:
-        return clamp(
-            self.params.cable_damping * stretch_rate,
-            -self.params.max_cable_damping_force,
-            self.params.max_cable_damping_force,
-        )
-
     def _update_sensor_estimate(self) -> None:
         params = self.params
         self.measured_theta = self.theta
@@ -1587,612 +1636,22 @@ class WallToolSimulator:
         self.measured_attitude = self.attitude
         self.measured_angular_velocity = self.angular_velocity
 
-        previous_stretch_estimate = self.measured_cable_stretch
-        tension_only_stretch = self.measured_tension / max(params.cable_stiffness, 1e-9)
-        extension_rate_estimate = clamp(
-            (tension_only_stretch - previous_stretch_estimate) / max(params.dt, 1e-9),
-            -params.max_cable_damping_force / max(params.cable_damping, 1e-9),
-            params.max_cable_damping_force / max(params.cable_damping, 1e-9),
-        )
-        damping_force_estimate = self._cable_damping_force(extension_rate_estimate)
-        stretch_estimate = max(
-            0.0,
-            (self.measured_tension - damping_force_estimate)
-            / max(params.cable_stiffness, 1e-9),
-        )
-        self.measured_cable_stretch = stretch_estimate
-        self.measured_line_velocity = self.measured_cable_velocity + (
-            stretch_estimate - previous_stretch_estimate
-        ) / max(params.dt, 1e-9)
-        self.measured_line_length = clamp(
-            self.measured_cable_length + stretch_estimate,
-            params.min_cable_length,
-            params.max_cable_length + stretch_estimate,
-        )
-        cable_out = (math.sin(self.measured_theta), -math.cos(self.measured_theta))
-        tangential_axis = (math.cos(self.measured_theta), math.sin(self.measured_theta))
-        attach_position = add2(params.anchor, scale2(cable_out, self.measured_line_length))
-        attach_velocity = add2(
-            scale2(cable_out, self.measured_line_velocity),
-            scale2(tangential_axis, self.measured_line_length * self.measured_theta_dot),
-        )
-        mount_offset = self._cable_mount_offset(self.measured_attitude)
-        mount_velocity = scale2((-mount_offset[1], mount_offset[0]), self.measured_angular_velocity)
-        self.measured_payload = sub2(attach_position, mount_offset)
-        self.estimated_payload_velocity = sub2(attach_velocity, mount_velocity)
-
-    def _static_cable_tension_target(self, point: Vec2) -> float:
-        params = self.params
-        attach_point = self._cable_mount_position(point, params.nominal_attitude_rad)
-        cable_axis = normalize2((params.anchor[0] - attach_point[0], params.anchor[1] - attach_point[1]))
-        left_axis, right_axis = self._drone_axes(params.nominal_attitude_rad)
-        required_force = (0.0, params.total_mass * params.gravity)
-        desired_cable_tension, _left, _right, _residual = self._allocate_support_force(
-            required_force,
-            cable_axis,
-            left_axis,
-            right_axis,
-            params,
-        )
-        return desired_cable_tension
-
-    def _contact_valid_reference_governor_scale(self) -> float:
-        params = self.params
-        if not params.contact_governor_enabled or not self.trajectory.segments:
-            return 1.0
-
-        def smoothstep(value: float) -> float:
-            value = clamp(value, 0.0, 1.0)
-            return value * value * (3.0 - 2.0 * value)
-
-        scale = 1.0
-        goals = self.trajectory.goals
-        current = self.trajectory.position
-        if goals:
-            active = goals[0]
-            distance_to_target = distance2(current, active)
-            turn_proximity = smoothstep(
-                1.0 - distance_to_target / max(params.contact_governor_turn_distance_m, 1e-6)
-            )
-
-            if len(goals) >= 2:
-                incoming = normalize2(sub2(active, current))
-                outgoing = normalize2(sub2(goals[1], active))
-                turn_alignment = dot2(incoming, outgoing)
-                turn_shape = clamp(
-                    (params.contact_governor_turn_alignment - turn_alignment)
-                    / max(params.contact_governor_turn_alignment + 1.0, 1e-6),
-                    0.0,
-                    1.0,
-                )
-                near_boundary = (
-                    active[0] <= params.contact_work_x_min + params.contact_governor_boundary_margin_m
-                    or active[0] >= params.contact_work_x_max - params.contact_governor_boundary_margin_m
-                    or active[1] >= params.contact_work_z_max - params.contact_governor_boundary_margin_m
-                )
-                boundary_gain = 1.0 if near_boundary else 0.70
-                turn_risk = smoothstep(turn_proximity * turn_shape * boundary_gain)
-                scale = min(
-                    scale,
-                    1.0 - (1.0 - params.contact_governor_turn_min_scale) * turn_risk,
-                )
-            elif params.contact_work_enabled:
-                final_stop_risk = 0.45 * turn_proximity
-                scale = min(
-                    scale,
-                    1.0 - (1.0 - params.contact_governor_turn_min_scale) * final_stop_risk,
-                )
-
-            _length, _theta, active_efficiency = cable_geometry_proxy(active, params)
-            geometry_risk = clamp(
-                (params.contact_governor_geometry_efficiency - active_efficiency)
-                / max(params.contact_governor_geometry_efficiency, 1e-6),
-                0.0,
-                1.0,
-            )
-            scale = min(
-                scale,
-                1.0 - (1.0 - params.contact_governor_geometry_min_scale) * smoothstep(geometry_risk),
-            )
-
-        if self.history and params.work_contact_tracking_limit_m > 0.0:
-            last = self.history[-1]
-            tracking_ratio = last.measured_tool_error / max(params.work_contact_tracking_limit_m, 1e-9)
-            tracking_risk = clamp(
-                (tracking_ratio - params.contact_governor_tracking_ratio)
-                / max(1.0 - params.contact_governor_tracking_ratio, 1e-6),
-                0.0,
-                1.0,
-            )
-            scale = min(
-                scale,
-                1.0 - (1.0 - params.contact_governor_tracking_min_scale) * smoothstep(tracking_risk),
-            )
-            if last.work_mode and params.work_contact_speed_limit_mps > 0.0:
-                speed = math.hypot(last.payload_velocity[0], last.payload_velocity[1])
-                speed_ratio = speed / max(params.work_contact_speed_limit_mps, 1e-9)
-                speed_risk = clamp(
-                    (speed_ratio - params.contact_governor_speed_ratio)
-                    / max(1.0 - params.contact_governor_speed_ratio, 1e-6),
-                    0.0,
-                    1.0,
-                )
-                scale = min(
-                    scale,
-                    1.0 - (1.0 - params.contact_governor_speed_min_scale) * smoothstep(speed_risk),
-                )
-
-        return clamp(scale, params.reference_speed_min, 1.0)
-
-    def _time_scaled_reference(self, reference: ReferenceState) -> ReferenceState:
-        speed_scale = clamp(self.reference_speed_scale, 0.0, 1.0)
-        return ReferenceState(
-            position=reference.position,
-            velocity=scale2(reference.velocity, speed_scale),
-            acceleration=scale2(reference.acceleration, speed_scale * speed_scale),
-            final_target=reference.final_target,
-            active_target=reference.active_target,
-            active=reference.active,
-            waypoint_count=reference.waypoint_count,
-        )
-
-    def _update_reference_speed_scale(self) -> None:
-        params = self.params
-        if not self.history or not self.trajectory.segments:
-            target_scale = 1.0
-        else:
-            last = self.history[-1]
-            weight = params.total_mass * params.gravity
-            thrust_fraction = max(last.left_thrust, last.right_thrust) / max(params.max_thrust_per_drone, 1e-9)
-            thrust_risk = clamp(
-                (thrust_fraction - params.thrust_slowdown_fraction)
-                / max(1e-6, 1.0 - params.thrust_slowdown_fraction),
-                0.0,
-                1.0,
-            )
-            residual_risk = clamp(
-                last.allocation_residual / max(weight * params.residual_slowdown_fraction, 1e-9),
-                0.0,
-                1.0,
-            )
-            error_risk = clamp(
-                (last.measured_tool_error - params.tracking_error_slowdown_m)
-                / max(1e-6, params.tracking_error_full_slow_m - params.tracking_error_slowdown_m),
-                0.0,
-                1.0,
-            )
-            cable_axis = (-math.sin(self.measured_theta), math.cos(self.measured_theta))
-            vertical_efficiency = max(0.0, cable_axis[1])
-            geometry_risk = clamp(
-                (params.geometry_slowdown_efficiency - vertical_efficiency)
-                / max(params.geometry_slowdown_efficiency, 1e-6),
-                0.0,
-                1.0,
-            )
-            contact_risk = 0.0
-            if params.normal_contact_enabled and last.work_mode:
-                if last.contact_force < params.min_contact_force_N:
-                    contact_risk = clamp(
-                        (params.min_contact_force_N - last.contact_force)
-                        / max(params.min_contact_force_N, 1e-9),
-                        0.0,
-                        1.0,
-                    )
-                elif last.contact_force > params.max_contact_force_N:
-                    contact_risk = clamp(
-                        (last.contact_force - params.max_contact_force_N)
-                        / max(params.max_contact_force_N, 1e-9),
-                        0.0,
-                        1.0,
-                    )
-                speed = math.hypot(last.payload_velocity[0], last.payload_velocity[1])
-                speed_risk = clamp(
-                    (speed - params.work_contact_speed_limit_mps)
-                    / max(params.work_contact_speed_limit_mps, 1e-9),
-                    0.0,
-                    1.0,
-                )
-                contact_risk = max(contact_risk, speed_risk)
-            risk = max(thrust_risk, residual_risk, error_risk, contact_risk, 0.75 * geometry_risk)
-            target_scale = 1.0 - (1.0 - params.reference_speed_min) * risk
-
-        self.reference_governor_scale = self._contact_valid_reference_governor_scale()
-        target_scale = min(target_scale, self.reference_governor_scale)
-
-        rate = params.reference_slowdown_rate if target_scale < self.reference_speed_scale else params.reference_recovery_rate
-        alpha = 1.0 - math.exp(-rate * params.dt)
-        self.reference_speed_scale += alpha * (target_scale - self.reference_speed_scale)
-        self.reference_speed_scale = clamp(self.reference_speed_scale, params.reference_speed_min, 1.0)
+        self.measured_cable_stretch = 0.0
+        self.measured_line_velocity = self.length_dot
+        self.measured_line_length = self.length
+        self.measured_payload = self.position
+        self.estimated_payload_velocity = self.velocity
 
     def _safe_reference(self, reference: ReferenceState) -> ReferenceState:
-        params = self.params
-        point = self._clamp_wall_point(reference.position)
-        anchor_to_point = sub2(self._cable_mount_position(point, params.nominal_attitude_rad), params.anchor)
-        distance = math.hypot(anchor_to_point[0], anchor_to_point[1])
-        clamped = distance2(point, reference.position) > 1e-8
-        if distance < params.min_control_cable_length:
-            if distance < 1e-9:
-                direction = (0.0, -1.0)
-            else:
-                direction = (anchor_to_point[0] / distance, anchor_to_point[1] / distance)
-            mount_point = add2(params.anchor, scale2(direction, params.min_control_cable_length))
-            point = sub2(mount_point, self._cable_mount_offset(params.nominal_attitude_rad))
-            point = self._clamp_wall_point(point)
-            clamped = True
-        if not clamped:
-            return reference
         return ReferenceState(
-            position=point,
-            velocity=(0.0, 0.0),
-            acceleration=(0.0, 0.0),
-            final_target=reference.final_target,
-            active_target=reference.active_target,
+            position=self._clamp_wall_point(reference.position),
+            velocity=reference.velocity,
+            acceleration=reference.acceleration,
+            final_target=self._clamp_wall_point(reference.final_target),
+            active_target=self._clamp_wall_point(reference.active_target),
             active=reference.active,
             waypoint_count=reference.waypoint_count,
         )
-
-    def _filter_cable_tension_target(self, raw_target: float) -> float:
-        params = self.params
-        alpha = params.dt / max(params.dt, params.tension_filter_tau + params.dt)
-        lowpass_target = self.filtered_cable_tension_target + alpha * (raw_target - self.filtered_cable_tension_target)
-        self.filtered_cable_tension_target += clamp(
-            lowpass_target - self.filtered_cable_tension_target,
-            -params.max_tension_target_rate * params.dt,
-            params.max_tension_target_rate * params.dt,
-        )
-        self.filtered_cable_tension_target = clamp(
-            self.filtered_cable_tension_target,
-            0.0,
-            params.max_spool_tension,
-        )
-        return self.filtered_cable_tension_target
-
-    def _efficient_cable_support_fraction(
-        self,
-        vertical_efficiency: float,
-        cable_axis: Vec2,
-        cable_arm: Vec2,
-        *,
-        radial_in_request: bool,
-        radial_out_request: bool,
-        hold_mode: bool,
-    ) -> float:
-        """Choose how much load the cable should carry before reel velocity control."""
-        params = self.params
-        if hold_mode:
-            base_fraction = params.hold_cable_support_fraction
-        elif radial_in_request:
-            base_fraction = params.lift_cable_support_fraction
-        elif radial_out_request:
-            base_fraction = params.lower_cable_support_fraction
-        else:
-            base_fraction = params.cable_support_floor_fraction
-
-        low_fraction = params.lower_cable_support_fraction
-        if radial_out_request and not hold_mode:
-            return low_fraction
-
-        geometry = clamp(
-            (vertical_efficiency - params.min_cable_vertical_efficiency)
-            / max(1e-6, 1.0 - params.min_cable_vertical_efficiency),
-            0.0,
-            1.0,
-        )
-        geometry = geometry * geometry * (3.0 - 2.0 * geometry)
-        torque_lever = abs(cross2(cable_arm, cable_axis)) / max(params.payload_hex_radius, 1e-9)
-        torque_discount = clamp(1.0 - 0.35 * torque_lever, 0.35, 1.0)
-        return low_fraction + (base_fraction - low_fraction) * geometry * torque_discount
-
-    def _efficient_cable_tension_request(
-        self,
-        radial_tension_feedforward: float,
-        vertical_efficiency: float,
-        cable_axis: Vec2,
-        cable_arm: Vec2,
-        *,
-        radial_in_request: bool,
-        radial_out_request: bool,
-        hold_mode: bool,
-    ) -> float:
-        params = self.params
-        support_fraction = self._efficient_cable_support_fraction(
-            vertical_efficiency,
-            cable_axis,
-            cable_arm,
-            radial_in_request=radial_in_request,
-            radial_out_request=radial_out_request,
-            hold_mode=hold_mode,
-        )
-        if vertical_efficiency > params.min_cable_vertical_efficiency:
-            efficient_support_tension = support_fraction * params.total_mass * params.gravity / vertical_efficiency
-        else:
-            efficient_support_tension = params.min_tracking_tension
-
-        if radial_out_request and not radial_in_request and not hold_mode:
-            tension_request = efficient_support_tension
-        else:
-            tension_request = max(radial_tension_feedforward, efficient_support_tension)
-        return clamp(tension_request, params.min_tracking_tension, params.max_spool_tension)
-
-    def _spool_velocity_policy(
-        self,
-        target_length: float,
-        target_length_dot: float,
-        radial_length_accel_cmd: float,
-        desired_cable_tension: float,
-        radial_out_request: bool,
-        hold_mode: bool,
-    ) -> float:
-        """Command only reel velocity; tension is shaped indirectly through stretch."""
-        params = self.params
-        target_encoder_length = clamp(
-            target_length - desired_cable_tension / max(params.cable_stiffness, 1e-9),
-            params.min_cable_length,
-            params.max_cable_length,
-        )
-        line_length_error = target_length - self.measured_line_length
-        line_velocity_error = target_length_dot - self.measured_line_velocity
-        encoder_length_error = target_encoder_length - self.measured_cable_length
-
-        if hold_mode:
-            return self._hold_spool_velocity_policy(
-                line_length_error,
-                line_velocity_error,
-                desired_cable_tension,
-            )
-        if params.control_law == "miesc":
-            return self._miesc_spool_velocity_policy(
-                target_length,
-                target_length_dot,
-                radial_length_accel_cmd,
-                desired_cable_tension,
-                radial_out_request,
-                line_length_error,
-                line_velocity_error,
-                encoder_length_error,
-            )
-
-        tension_velocity_guard = -params.spool_tension_kv * (desired_cable_tension - self.measured_tension)
-        if line_length_error > params.radial_length_deadband and tension_velocity_guard < 0.0:
-            tension_velocity_guard = 0.0
-
-        spool_velocity_cmd = clamp(
-            target_length_dot
-            + params.spool_velocity_kp * line_length_error
-            + params.spool_velocity_kd * line_velocity_error
-            + params.spool_encoder_kp * encoder_length_error
-            + params.spool_radial_accel_ff * radial_length_accel_cmd
-            + tension_velocity_guard,
-            -params.max_spool_speed,
-            params.max_spool_speed,
-        )
-
-        tension_fraction = self.measured_tension / max(desired_cable_tension, 1e-9)
-        if self.measured_tension < params.min_tracking_tension:
-            if line_length_error <= 0.0:
-                slack_fraction = 1.0 - self.measured_tension / max(params.min_tracking_tension, 1e-9)
-                spool_velocity_cmd = min(spool_velocity_cmd, -params.slack_recovery_spool_speed * slack_fraction)
-            else:
-                spool_velocity_cmd = clamp(spool_velocity_cmd, 0.0, params.slack_pay_out_speed)
-        elif tension_fraction < 0.85 and spool_velocity_cmd > 0.0:
-            if radial_out_request and line_length_error > 0.0:
-                payout_limit = clamp(
-                    params.gravity_lowering_payout_speed * line_length_error / max(0.25, self.measured_line_length),
-                    params.slack_pay_out_speed,
-                    params.gravity_lowering_payout_speed,
-                )
-            else:
-                payout_limit = params.slack_pay_out_speed * clamp((tension_fraction - 0.45) / 0.40, 0.0, 1.0)
-            spool_velocity_cmd = min(spool_velocity_cmd, payout_limit)
-
-        over_tension = self.measured_tension - desired_cable_tension
-        if over_tension > params.tension_feedback_pay_out_deadband and self.measured_tension > 1.02 * params.total_mass * params.gravity:
-            release_fraction = clamp(
-                (over_tension - params.tension_feedback_pay_out_deadband)
-                / max(params.tension_feedback_pay_out_release, 1e-9),
-                0.0,
-                1.0,
-            )
-            if line_length_error < -params.radial_length_deadband:
-                reel_in_limit = -params.max_spool_speed * (1.0 - release_fraction)
-                spool_velocity_cmd = max(spool_velocity_cmd, reel_in_limit)
-            else:
-                relief_speed = params.gravity_lowering_payout_speed * release_fraction
-                spool_velocity_cmd = max(spool_velocity_cmd, relief_speed)
-
-        if (
-            desired_cable_tension > 2.0 * params.min_tracking_tension
-            and self.measured_tension < 0.75 * desired_cable_tension
-            and spool_velocity_cmd > params.gravity_lowering_payout_speed
-        ):
-            spool_velocity_cmd = params.gravity_lowering_payout_speed
-
-        return self._rate_limit_spool_velocity(
-            clamp(spool_velocity_cmd, -params.max_spool_speed, params.max_spool_speed),
-            params.spool_accel_limit_mps2,
-        )
-
-    def _miesc_spool_velocity_policy(
-        self,
-        target_length: float,
-        target_length_dot: float,
-        radial_length_accel_cmd: float,
-        desired_cable_tension: float,
-        radial_out_request: bool,
-        line_length_error: float,
-        line_velocity_error: float,
-        encoder_length_error: float,
-    ) -> float:
-        """MIESC reel law: track radial geometry, with only tension guards."""
-
-        params = self.params
-        tension_error = desired_cable_tension - self.measured_tension
-        raw_cmd = (
-            target_length_dot
-            + params.miesc_reel_length_kp * line_length_error
-            + params.miesc_reel_velocity_kd * line_velocity_error
-            + params.miesc_reel_encoder_kp * encoder_length_error
-            + params.miesc_reel_accel_ff * radial_length_accel_cmd
-            - params.miesc_reel_tension_kv * tension_error
-        )
-
-        if self.measured_tension < params.min_tracking_tension:
-            if line_length_error <= 0.0:
-                slack_fraction = 1.0 - self.measured_tension / max(params.min_tracking_tension, 1e-9)
-                raw_cmd = min(raw_cmd, -params.slack_recovery_spool_speed * slack_fraction)
-            else:
-                raw_cmd = clamp(raw_cmd, 0.0, params.slack_pay_out_speed)
-        elif radial_out_request and self.measured_tension < 0.82 * desired_cable_tension and raw_cmd > 0.0:
-            large_error_release = clamp(
-                (line_length_error - params.radial_length_deadband)
-                / max(0.18, params.radial_length_deadband),
-                0.0,
-                1.0,
-            )
-            payout_limit = params.slack_pay_out_speed + large_error_release * (
-                params.gravity_lowering_payout_speed - params.slack_pay_out_speed
-            )
-            raw_cmd = min(raw_cmd, payout_limit)
-
-        over_tension = self.measured_tension - desired_cable_tension
-        if over_tension > params.tension_feedback_pay_out_deadband and line_length_error > -params.radial_length_deadband:
-            release_fraction = clamp(
-                over_tension / max(params.tension_feedback_pay_out_release, 1e-9),
-                0.0,
-                1.0,
-            )
-            raw_cmd = max(raw_cmd, params.gravity_lowering_payout_speed * release_fraction)
-
-        return self._rate_limit_spool_velocity(
-            clamp(raw_cmd, -params.max_spool_speed, params.max_spool_speed),
-            params.miesc_spool_accel_limit_mps2,
-        )
-
-    def _hold_spool_velocity_policy(
-        self,
-        line_length_error: float,
-        line_velocity_error: float,
-        desired_cable_tension: float,
-    ) -> float:
-        params = self.params
-        tension_error = desired_cable_tension - self.measured_tension
-        if self.measured_tension < params.min_tracking_tension:
-            raw_cmd = -params.slack_recovery_spool_speed
-        elif (
-            abs(line_length_error) < params.hold_spool_deadband_m
-            and abs(line_velocity_error) < params.hold_spool_velocity_deadband_mps
-            and abs(tension_error) < params.hold_spool_tension_deadband_N
-        ):
-            raw_cmd = 0.0
-        else:
-            raw_cmd = (
-                params.hold_spool_length_kp * line_length_error
-                + params.hold_spool_velocity_kd * line_velocity_error
-                - params.hold_spool_tension_kv * tension_error
-            )
-        raw_cmd = clamp(raw_cmd, -params.hold_max_spool_speed, params.hold_max_spool_speed)
-        return self._rate_limit_spool_velocity(raw_cmd, params.hold_spool_accel_limit_mps2)
-
-    def _rate_limit_spool_velocity(self, raw_cmd: float, accel_limit: float) -> float:
-        max_delta = max(0.0, accel_limit) * self.params.dt
-        return clamp(raw_cmd, self.last_spool_velocity_cmd - max_delta, self.last_spool_velocity_cmd + max_delta)
-
-    def _hold_static_allocation_cost(
-        self,
-        position: Vec2,
-        attitude: float,
-        tension: float,
-    ) -> tuple[float, float, tuple[float, float], Vec2]:
-        params = self.params
-        mount = self._cable_mount_position(position, attitude)
-        cable_axis = normalize2((params.anchor[0] - mount[0], params.anchor[1] - mount[1]))
-        left_axis, right_axis = self._drone_axes(attitude)
-        cable_arm = self._cable_mount_offset(attitude)
-        left_arm, right_arm = self._module_center_offsets(attitude)
-        torque_scale = max(params.hold_torque_residual_length_scale, 1e-6)
-        required_force = (
-            -tension * cable_axis[0],
-            params.total_mass * params.gravity - tension * cable_axis[1],
-        )
-        required_torque = -tension * cross2(cable_arm, cable_axis)
-        values, residual = self._solve_bounded_allocation(
-            required=(required_force[0], required_force[1], required_torque / torque_scale),
-            axes=(
-                (left_axis[0], left_axis[1], cross2(left_arm, left_axis) / torque_scale),
-                (right_axis[0], right_axis[1], cross2(right_arm, right_axis) / torque_scale),
-            ),
-            upper_bounds=(params.max_thrust_per_drone, params.max_thrust_per_drone),
-            effort_costs=(params.drone_thrust_cost, params.drone_thrust_cost),
-        )
-
-        vertical_efficiency = max(0.0, cable_axis[1])
-        efficiency_floor = max(1e-3, params.min_cable_vertical_efficiency)
-        geometry_ratio = (1.0 - vertical_efficiency) / max(vertical_efficiency, efficiency_floor)
-        max_thrust = max(params.max_thrust_per_drone, 1e-9)
-        max_tension = max(params.max_spool_tension, 1e-9)
-        weight = max(params.total_mass * params.gravity, 1e-9)
-        tilt_ratio = wrap_angle(attitude - params.nominal_attitude_rad) / max(
-            params.hold_equilibrium_tilt_limit_rad,
-            1e-9,
-        )
-        residual_ratio = residual / weight
-        thrust_cost = params.drone_thrust_cost * (
-            (values[0] / max_thrust) * (values[0] / max_thrust)
-            + (values[1] / max_thrust) * (values[1] / max_thrust)
-        )
-        cable_cost = params.cable_tension_cost * (tension / max_tension) * (tension / max_tension) * (
-            1.0 + params.cable_geometry_cost * geometry_ratio * geometry_ratio
-        )
-        tilt_cost = params.hold_efficiency_tilt_weight * tilt_ratio * tilt_ratio
-        residual_cost = params.hold_efficiency_residual_weight * residual_ratio * residual_ratio
-        return residual_cost + thrust_cost + cable_cost + tilt_cost, residual, values, cable_axis
-
-    def _hold_optimal_static_equilibrium(
-        self,
-        position: Vec2,
-        tension_upper: float | None = None,
-    ) -> tuple[float, float, tuple[float, float], float]:
-        params = self.params
-        lower = params.min_tracking_tension
-        upper = clamp(
-            params.max_spool_tension if tension_upper is None else tension_upper,
-            lower,
-            params.max_spool_tension,
-        )
-        cache_key = (round(position[0], 3), round(position[1], 3), round(upper, 2))
-        if self._hold_equilibrium_cache is not None and self._hold_equilibrium_cache[0] == cache_key:
-            return self._hold_equilibrium_cache[1]
-
-        attitude_steps = max(1, params.hold_attitude_search_steps)
-        tension_steps = max(1, params.hold_tension_search_steps)
-        attitude_limit = params.hold_equilibrium_tilt_limit_rad
-        attitude_candidates = [
-            params.nominal_attitude_rad - attitude_limit + 2.0 * attitude_limit * index / attitude_steps
-            for index in range(attitude_steps + 1)
-        ]
-        attitude_candidates.append(self.measured_attitude)
-
-        best_cost = math.inf
-        best_result = (
-            params.nominal_attitude_rad,
-            lower,
-            (0.0, 0.0),
-            math.inf,
-        )
-        for attitude in attitude_candidates:
-            for index in range(tension_steps + 1):
-                tension = lower + (upper - lower) * index / tension_steps
-                cost, residual, values, _cable_axis = self._hold_static_allocation_cost(position, attitude, tension)
-                if cost < best_cost:
-                    best_cost = cost
-                    best_result = (attitude, tension, values, residual)
-
-        self._hold_equilibrium_cache = (cache_key, best_result)
-        return best_result
-
-    def _hold_equilibrium_attitude_for_position(self, position: Vec2, tension_upper: float | None = None) -> float:
-        attitude, _tension, _values, _residual = self._hold_optimal_static_equilibrium(position, tension_upper)
-        return attitude
 
     def _wind_force(self) -> Vec2:
         params = self.params
@@ -2214,6 +1673,16 @@ class WallToolSimulator:
         phase = 2.0 * math.pi * self.t / max(params.normal_wind_gust_period_s, 1e-6)
         gust = params.normal_wind_gust_force_N * (0.55 * math.sin(phase + 0.4) + 0.22 * math.sin(2.1 * phase))
         return params.normal_wind_force_N + gust
+
+    @staticmethod
+    def _cable_support_tension_limit(cable_axis: Vec2, params: SimParams) -> float:
+        vertical_efficiency = max(0.0, cable_axis[1])
+        if vertical_efficiency <= 1e-9:
+            return 0.0
+        support_limited_tension = (
+            params.max_cable_support_fraction * params.total_mass * params.gravity / vertical_efficiency
+        )
+        return clamp(support_limited_tension, 0.0, params.max_spool_tension)
 
     def _in_contact_work_region(self, point: Vec2) -> bool:
         params = self.params
@@ -2306,310 +1775,164 @@ class WallToolSimulator:
         self.theta_dot = dot2(mount_velocity, e_theta) / distance
         self.length_ddot = dot2(self.acceleration, e_out)
 
-    def step(self) -> SimState:
+    def _nmpc_config(self) -> MPCConfig:
+        params = self.params
+        left_offset_zero, right_offset_zero = self._module_center_offsets(0.0)
+        wall_margin = max(params.cage_radius, params.payload_half_length, params.payload_hex_radius) * 1.4
+        return MPCConfig(
+            horizon_steps=max(2, params.mpc_horizon_steps),
+            horizon_dt=max(params.dt, params.mpc_horizon_dt),
+            control_period_s=max(params.dt, params.mpc_control_period_s),
+            mass=params.total_mass,
+            inertia=params.assembly_inertia,
+            gravity=params.gravity,
+            anchor=params.anchor,
+            wall_width=params.wall_width,
+            wall_height=params.wall_height,
+            wall_margin=wall_margin,
+            payload_hex_radius=params.payload_hex_radius,
+            payload_half_length=params.payload_half_length,
+            module_gap=params.module_gap,
+            left_center_offset_zero=left_offset_zero,
+            right_center_offset_zero=right_offset_zero,
+            hex_face_tilt_rad=params.hex_face_tilt_rad,
+            nominal_attitude_rad=params.nominal_attitude_rad,
+            rotational_damping=params.rotational_damping,
+            max_thrust_per_drone=params.max_thrust_per_drone,
+            max_cable_tension=params.max_spool_tension,
+            max_cable_support_fraction=params.max_cable_support_fraction,
+            min_cable_vertical_efficiency=params.min_cable_vertical_efficiency,
+            min_cable_length=params.min_cable_length,
+            max_cable_length=params.max_cable_length,
+            max_spool_speed=params.max_spool_speed,
+            spool_accel_limit_mps2=params.spool_accel_limit_mps2,
+            attitude_limit_rad=params.mpc_attitude_limit_rad,
+            slack_limit_m=params.mpc_slack_limit_m,
+            tracking_position_weight=params.mpc_tracking_position_weight,
+            tracking_velocity_weight=params.mpc_tracking_velocity_weight,
+            terminal_position_weight=params.mpc_terminal_position_weight,
+            terminal_velocity_weight=params.mpc_terminal_velocity_weight,
+            drone_effort_weight=params.mpc_drone_effort_weight,
+            cable_effort_weight=params.mpc_cable_effort_weight,
+            reel_speed_weight=params.mpc_reel_speed_weight,
+            input_rate_weight=params.mpc_input_rate_weight,
+            attitude_rate_weight=params.mpc_attitude_rate_weight,
+            attitude_weight=params.mpc_attitude_weight,
+            slack_weight=params.mpc_slack_weight,
+            solver_max_iter=max(20, params.mpc_solver_max_iter),
+            solver_tolerance=max(1e-8, params.mpc_solver_tolerance),
+        )
+
+    def _ensure_nmpc(self) -> WallToolNMPC:
+        if self._nmpc is None:
+            self._nmpc = WallToolNMPC(self._nmpc_config())
+        return self._nmpc
+
+    def _nmpc_reference_horizon(self, reference: ReferenceState) -> MPCReferenceHorizon:
+        params = self.params
+        steps = max(2, params.mpc_horizon_steps)
+        dt = max(params.dt, params.mpc_horizon_dt)
+        if not reference.active or not self.trajectory.segments:
+            positions = tuple(reference.position for _ in range(steps + 1))
+            velocities = tuple((0.0, 0.0) for _ in range(steps + 1))
+            return MPCReferenceHorizon(positions=positions, velocities=velocities)
+
+        samples = self.trajectory._path_samples()
+        progress0 = self.trajectory.geometric_progress_m
+        speed = params.path_speed
+        slowdown_distance = self.trajectory._geometric_slowdown_distance(speed)
+        positions: list[Vec2] = []
+        velocities: list[Vec2] = []
+        for index in range(steps + 1):
+            progress = progress0 + speed * dt * index
+            point, tangent, remaining = self.trajectory._sample_path_at_progress(samples, progress)
+            speed_scale = clamp(remaining / max(slowdown_distance, 1e-9), 0.0, 1.0)
+            target_speed = speed * speed_scale
+            if remaining <= params.waypoint_tolerance:
+                target_speed = 0.0
+            positions.append(point)
+            velocities.append(scale2(tangent, target_speed))
+        positions[0] = reference.position
+        velocities[0] = reference.velocity
+        return MPCReferenceHorizon(positions=tuple(positions), velocities=tuple(velocities))
+
+    def _step_tool_head_nmpc(self) -> SimState:
         params = self.params
         mass = params.total_mass
         self._update_cable_coordinates()
         self._update_sensor_estimate()
-        self._update_reference_speed_scale()
         reference = self._safe_reference(
-            self._time_scaled_reference(self.trajectory.advance(params.dt * self.reference_speed_scale))
+            self.trajectory.geometric_reference(self.measured_payload, self.estimated_payload_velocity, params.dt)
         )
         self._update_normal_contact(reference)
-        _target_theta, target_length, _target_theta_dot, target_length_dot = self._reference_to_polar(reference)
 
-        control_cable_out = (math.sin(self.measured_theta), -math.cos(self.measured_theta))
-        control_cable_axis = (-control_cable_out[0], -control_cable_out[1])
-        control_tangential_axis = (math.cos(self.measured_theta), math.sin(self.measured_theta))
-
-        gravity_force = (0.0, -mass * params.gravity)
-        left_axis, right_axis = self._drone_axes(self.measured_attitude)
-        cable_arm = self._cable_mount_offset(self.measured_attitude)
-        left_arm, right_arm = self._module_center_offsets(self.measured_attitude)
-        measured_position_error = distance2(self.measured_payload, reference.position)
-        measured_speed = math.hypot(self.estimated_payload_velocity[0], self.estimated_payload_velocity[1])
-        hold_arrived = (
-            not reference.active
-            and measured_position_error < params.attitude_hold_error_m
-            and measured_speed < params.attitude_hold_speed_mps
-        )
-        hold_release = (
-            reference.active
-            or measured_position_error > params.attitude_hold_release_error_m
-            or measured_speed > params.attitude_hold_release_speed_mps
-        )
-        if hold_arrived:
-            self.hold_latched = True
-        elif hold_release:
-            self.hold_latched = False
-        hold_attitude_ready = self.hold_latched and not reference.active
-        hold_position_ready = (
-            not reference.active
-            and (self.hold_latched or measured_position_error < params.attitude_hold_release_error_m)
+        true_mount = self._cable_mount_position(self.position, self.attitude)
+        true_distance = distance2(params.anchor, true_mount)
+        if self.cable_length < true_distance:
+            self.cable_length = clamp(true_distance, params.min_cable_length, params.max_cable_length)
+        measured_state = (
+            self.measured_payload[0],
+            self.measured_payload[1],
+            self.estimated_payload_velocity[0],
+            self.estimated_payload_velocity[1],
+            self.measured_attitude,
+            self.measured_angular_velocity,
+            clamp(max(self.cable_length, true_distance), params.min_cable_length, params.max_cable_length),
         )
 
-        line_length = max(self.measured_line_length, params.min_cable_length)
-        line_velocity = self.measured_line_velocity
-        length_error = target_length - line_length
-        length_dot_error = target_length_dot - line_velocity
-        target_theta, _target_length, target_theta_dot, _target_length_dot = self._reference_to_polar(reference)
-        reference_radial_accel = dot2(reference.acceleration, control_cable_out)
-        reference_tangential_accel = dot2(reference.acceleration, control_tangential_axis)
-        if params.control_law == "miesc":
-            energy_command = mixed_input_energy_command(
-                line_length_m=line_length,
-                line_velocity_m_s=line_velocity,
-                measured_theta_rad=self.measured_theta,
-                measured_theta_dot_rad_s=self.measured_theta_dot,
-                target_length_m=target_length,
-                target_length_dot_m_s=target_length_dot,
-                target_theta_rad=target_theta,
-                target_theta_dot_rad_s=target_theta_dot,
-                reference_radial_accel_m_s2=reference_radial_accel,
-                reference_tangential_accel_m_s2=reference_tangential_accel,
-                mass_kg=mass,
-                radial_frequency_rad_s=params.miesc_radial_frequency_rad_s,
-                radial_damping_ratio=params.miesc_radial_damping_ratio,
-                tangential_frequency_rad_s=params.miesc_tangential_frequency_rad_s,
-                tangential_damping_ratio=params.miesc_tangential_damping_ratio,
-                clf_decay_rate=params.miesc_clf_decay_rate,
-                max_radial_accel_m_s2=params.max_radial_accel,
-                max_tangential_accel_m_s2=params.max_tangential_accel,
+        if self._nmpc_last_solution is None or self.t + 1e-12 >= self._nmpc_next_solve_t:
+            horizon = self._nmpc_reference_horizon(reference)
+            solution = self._ensure_nmpc().solve(
+                measured_state=measured_state,
+                reference=horizon,
+                previous_command=self._nmpc_previous_command,
             )
-            radial_length_accel_cmd = energy_command.radial_acceleration
-            tangential_accel_cmd = energy_command.tangential_acceleration
-            theta_error = energy_command.tangential_position_error_m / max(line_length, 1e-9)
-            theta_dot_error = energy_command.tangential_velocity_error_m_s / max(line_length, 1e-9)
+            self._nmpc_last_solution = solution
+            self._nmpc_next_solve_t = self.t + max(params.dt, params.mpc_control_period_s)
         else:
-            radial_length_accel_cmd = clamp(
-                reference_radial_accel
-                + params.radial_accel_kp * length_error
-                + params.radial_accel_kd * length_dot_error,
-                -params.max_radial_accel,
-                params.max_radial_accel,
-            )
-            theta_error = wrap_angle(target_theta - self.measured_theta)
-            theta_dot_error = target_theta_dot - self.measured_theta_dot
-            theta_ddot_cmd = clamp(
-                params.pendulum_theta_kp * theta_error + params.pendulum_theta_kd * theta_dot_error,
-                -params.max_pendulum_theta_ddot,
-                params.max_pendulum_theta_ddot,
-            )
-            tangential_accel_cmd = clamp(
-                reference_tangential_accel
-                + line_length * theta_ddot_cmd
-                + 2.0 * line_velocity * self.measured_theta_dot,
-                -params.max_tangential_accel,
-                params.max_tangential_accel,
-            )
-            tangential_error = line_length * theta_error
-            tangential_velocity_error = line_length * theta_dot_error + line_velocity * theta_error
-            swing_energy = 0.5 * mass * (
-                tangential_velocity_error * tangential_velocity_error
-                + params.miesc_tangential_frequency_rad_s
-                * params.miesc_tangential_frequency_rad_s
-                * tangential_error
-                * tangential_error
-            )
-            energy_command = MixedInputEnergyCommand(
-                radial_acceleration=radial_length_accel_cmd,
-                tangential_acceleration=tangential_accel_cmd,
-                radial_position_error_m=length_error,
-                radial_velocity_error_m_s=length_dot_error,
-                tangential_position_error_m=tangential_error,
-                tangential_velocity_error_m_s=tangential_velocity_error,
-                swing_energy_J=swing_energy,
-                swing_power_W=0.0,
-                clf_margin_W=0.0,
-                clf_projected_accel_m_s2=0.0,
-            )
-        gravity_tangential_force = dot2(gravity_force, control_tangential_axis)
-        desired_tangential_force = mass * tangential_accel_cmd - gravity_tangential_force
+            solution = self._nmpc_last_solution
 
-        gravity_radial_force = dot2(gravity_force, control_cable_out)
-        radial_accel_component_cmd = radial_length_accel_cmd - line_length * self.measured_theta_dot * self.measured_theta_dot
-        radial_tension_feedforward = gravity_radial_force - mass * radial_accel_component_cmd
-        vertical_efficiency = control_cable_axis[1]
-        radial_in_request = (
-            target_length_dot < -params.radial_motion_deadband
-            or length_error < -params.radial_length_deadband
+        left_thrust = clamp(solution.left_thrust, 0.0, params.max_thrust_per_drone)
+        right_thrust = clamp(solution.right_thrust, 0.0, params.max_thrust_per_drone)
+        desired_cable_tension = clamp(solution.cable_tension, 0.0, params.max_spool_tension)
+        max_spool_delta = params.spool_accel_limit_mps2 * params.dt
+        spool_velocity_cmd = clamp(
+            solution.spool_velocity,
+            self.last_spool_velocity_cmd - max_spool_delta,
+            self.last_spool_velocity_cmd + max_spool_delta,
         )
-        radial_out_request = (
-            target_length_dot > params.radial_motion_deadband
-            or length_error > params.radial_length_deadband
-        )
-        raw_desired_cable_tension = self._efficient_cable_tension_request(
-            radial_tension_feedforward,
-            vertical_efficiency,
-            control_cable_axis,
-            cable_arm,
-            radial_in_request=radial_in_request,
-            radial_out_request=radial_out_request,
-            hold_mode=hold_position_ready,
-        )
-        if hold_position_ready:
-            _hold_attitude, hold_tension, _hold_values, _hold_residual = self._hold_optimal_static_equilibrium(
-                reference.position,
-                params.max_spool_tension,
-            )
-            raw_desired_cable_tension = hold_tension
-        desired_cable_tension = self._filter_cable_tension_target(
-            max(raw_desired_cable_tension, params.min_tracking_tension)
-        )
-        desired_radial_drone_force = 0.0
-        if hold_position_ready:
-            hold_position_error = sub2(reference.position, self.measured_payload)
-            hold_accel_cmd = limit_norm2(
-                add2(
-                    scale2(hold_position_error, params.hold_position_kp),
-                    scale2(self.estimated_payload_velocity, -params.hold_position_kd),
-                ),
-                params.hold_max_position_accel,
-            )
-            hold_drone_force = sub2(
-                add2((0.0, mass * params.gravity), scale2(hold_accel_cmd, mass)),
-                scale2(control_cable_axis, desired_cable_tension),
-            )
-            desired_tangential_force = dot2(hold_drone_force, control_tangential_axis)
-            desired_radial_drone_force = dot2(hold_drone_force, control_cable_out)
-        else:
-            radial_rescue_scale = clamp(
-                (abs(length_error) - params.drone_radial_rescue_error_m)
-                / max(1e-6, params.drone_radial_rescue_full_error_m - params.drone_radial_rescue_error_m),
-                0.0,
-                1.0,
-            )
-            radial_residual_force = mass * radial_accel_component_cmd - gravity_radial_force + desired_cable_tension
-            desired_radial_drone_force = (
-                params.drone_radial_accel_fraction
-                * radial_rescue_scale
-                * radial_residual_force
-            )
-        desired_drone_force = add2(
-            scale2(control_tangential_axis, desired_tangential_force),
-            scale2(control_cable_out, desired_radial_drone_force),
-        )
-        if hold_attitude_ready:
-            attitude_kp = params.hold_attitude_kp
-            attitude_kd = params.hold_attitude_kd
-            max_attitude_torque = params.hold_max_attitude_torque
-            attitude_target = self._hold_equilibrium_attitude_for_position(
-                reference.position,
-                params.max_spool_tension,
-            )
-        else:
-            attitude_kp = params.move_attitude_kp
-            attitude_kd = params.move_attitude_kd
-            max_attitude_torque = params.move_max_attitude_torque
-            attitude_target = params.nominal_attitude_rad
-        desired_attitude_torque = clamp(
-            params.assembly_inertia
-            * (
-                attitude_kp * wrap_angle(attitude_target - self.measured_attitude)
-                - attitude_kd * self.measured_angular_velocity
-            ),
-            -max_attitude_torque,
-            max_attitude_torque,
-        )
+        spool_velocity_cmd = clamp(spool_velocity_cmd, -params.max_spool_speed, params.max_spool_speed)
 
-        spool_velocity_cmd = self._spool_velocity_policy(
-            target_length,
-            target_length_dot,
-            radial_length_accel_cmd,
-            desired_cable_tension,
-            radial_out_request,
-            hold_position_ready,
-        )
         previous_cable_length = self.cable_length
         self.cable_length = clamp(
             self.cable_length + spool_velocity_cmd * params.dt,
             params.min_cable_length,
             params.max_cable_length,
         )
-        if self.cable_length in (params.min_cable_length, params.max_cable_length):
-            spool_velocity_cmd = (self.cable_length - previous_cable_length) / params.dt
+        if self.cable_length < true_distance:
+            self.cable_length = clamp(true_distance, params.min_cable_length, params.max_cable_length)
+            spool_velocity_cmd = (self.cable_length - previous_cable_length) / max(params.dt, 1e-9)
+        self.last_spool_velocity_cmd = spool_velocity_cmd
 
         true_cable_arm = self._cable_mount_offset(self.attitude)
         true_mount_position = add2(self.position, true_cable_arm)
         true_mount_velocity = add2(self.velocity, scale2((-true_cable_arm[1], true_cable_arm[0]), self.angular_velocity))
-        anchor_to_true_mount = sub2(true_mount_position, params.anchor)
-        true_distance = max(1e-9, math.hypot(anchor_to_true_mount[0], anchor_to_true_mount[1]))
-        true_cable_out = (anchor_to_true_mount[0] / true_distance, anchor_to_true_mount[1] / true_distance)
+        anchor_to_mount = sub2(true_mount_position, params.anchor)
+        true_distance = max(1e-9, math.hypot(anchor_to_mount[0], anchor_to_mount[1]))
+        true_cable_out = (anchor_to_mount[0] / true_distance, anchor_to_mount[1] / true_distance)
         true_cable_axis = (-true_cable_out[0], -true_cable_out[1])
-        true_radial_speed = dot2(true_mount_velocity, true_cable_out)
-
-        taut_clamped = False
-        taut_length_limit = true_distance - params.min_tracking_tension / max(params.cable_stiffness, 1e-9)
-        if self.cable_length > taut_length_limit:
-            limited_taut_length = clamp(taut_length_limit, params.min_cable_length, params.max_cable_length)
-            if previous_cable_length <= limited_taut_length:
-                self.cable_length = limited_taut_length
-                spool_velocity_cmd = (self.cable_length - previous_cable_length) / max(params.dt, 1e-9)
-                taut_clamped = True
-            elif spool_velocity_cmd > 0.0:
-                self.cable_length = previous_cable_length
-                spool_velocity_cmd = 0.0
-        self.last_spool_velocity_cmd = spool_velocity_cmd
-
-        self.cable_stretch = true_distance - self.cable_length
-        extension_rate = 0.0 if taut_clamped else true_radial_speed - spool_velocity_cmd
-        raw_tension = 0.0
-        if self.cable_stretch >= -params.cable_taut_band:
-            spring_tension = params.cable_stiffness * max(0.0, self.cable_stretch)
-            damping_tension = self._cable_damping_force(extension_rate)
-            raw_tension = max(
-                params.min_tracking_tension,
-                spring_tension + damping_tension,
-            )
-        self.cable_tension_saturated = raw_tension > params.max_spool_tension
-        tension = clamp(raw_tension, 0.0, params.max_spool_tension)
+        slack_gap = max(0.0, self.cable_length - true_distance)
+        actual_tension_limit = self._cable_support_tension_limit(true_cable_axis, params)
+        self.cable_tension_saturated = desired_cable_tension > actual_tension_limit
+        if slack_gap <= params.cable_taut_band:
+            tension = clamp(desired_cable_tension, 0.0, actual_tension_limit)
+        else:
+            tension = 0.0
         self.actual_tension = tension
-        self.cable_slack = tension <= 1e-9 and self.cable_stretch < -params.cable_taut_band
+        self.cable_stretch = 0.0
+        self.cable_slack = slack_gap > params.cable_taut_band or tension <= 1e-9
         cable_force = scale2(true_cable_axis, tension)
 
-        drone_accel_cmd = abs(tangential_accel_cmd)
-        measured_cable_force = scale2(control_cable_axis, self.measured_tension)
-        measured_cable_torque = cross2(cable_arm, measured_cable_force)
-        if hold_attitude_ready:
-            desired_drone_torque = desired_attitude_torque - measured_cable_torque
-        else:
-            desired_drone_torque = desired_attitude_torque - params.move_cable_torque_comp_fraction * measured_cable_torque
-        torque_scale_value = params.torque_residual_length_scale
-        if hold_attitude_ready:
-            torque_scale_value = params.hold_torque_residual_length_scale
-            shallow_ratio = clamp(
-                (params.shallow_hold_torque_scale_efficiency - max(0.0, vertical_efficiency))
-                / max(params.shallow_hold_torque_scale_efficiency - params.min_cable_vertical_efficiency, 1e-6),
-                0.0,
-                1.0,
-            )
-            torque_scale_value += shallow_ratio * (
-                params.shallow_hold_torque_residual_length_scale - params.hold_torque_residual_length_scale
-            )
-        torque_scale = max(torque_scale_value, 1e-6)
-        radial_force_scale = params.pendulum_radial_force_penalty
-        drone_values, allocation_residual = self._solve_bounded_allocation(
-            required=(
-                desired_tangential_force,
-                desired_drone_torque / torque_scale,
-                radial_force_scale * desired_radial_drone_force,
-            ),
-            axes=(
-                (
-                    dot2(left_axis, control_tangential_axis),
-                    cross2(left_arm, left_axis) / torque_scale,
-                    radial_force_scale * dot2(left_axis, control_cable_out),
-                ),
-                (
-                    dot2(right_axis, control_tangential_axis),
-                    cross2(right_arm, right_axis) / torque_scale,
-                    radial_force_scale * dot2(right_axis, control_cable_out),
-                ),
-            ),
-            upper_bounds=(params.max_thrust_per_drone, params.max_thrust_per_drone),
-            effort_costs=(params.drone_thrust_cost, params.drone_thrust_cost),
-        )
-        left_thrust, right_thrust = drone_values
         true_left_axis, true_right_axis = self._drone_axes(self.attitude)
         true_left_arm, true_right_arm = self._module_center_offsets(self.attitude)
         left_force = scale2(true_left_axis, left_thrust)
@@ -2619,211 +1942,65 @@ class WallToolSimulator:
         left_torque = cross2(true_left_arm, left_force)
         right_torque = cross2(true_right_arm, right_force)
         net_attitude_torque = cable_torque + left_torque + right_torque - params.rotational_damping * self.angular_velocity
-        e_theta = (math.cos(self.theta), math.sin(self.theta))
-        tangential_force = dot2(drone_force, e_theta)
-        saturated = allocation_residual > 0.05
+        gravity_force = (0.0, -mass * params.gravity)
         wind_force = self._wind_force()
         net_force = add2(add2(add2(drone_force, cable_force), gravity_force), wind_force)
         self.acceleration = scale2(net_force, 1.0 / mass)
         self.angular_acceleration = net_attitude_torque / max(params.assembly_inertia, 1e-9)
+
         self.velocity = add2(self.velocity, scale2(self.acceleration, params.dt))
         self.position = add2(self.position, scale2(self.velocity, params.dt))
         self.angular_velocity += self.angular_acceleration * params.dt
-        self.attitude += self.angular_velocity * params.dt
+        self.attitude = wrap_angle(self.attitude + self.angular_velocity * params.dt)
         self.t += params.dt
         self._update_cable_coordinates()
         self._update_sensor_estimate()
+        self._nmpc_previous_command = (left_thrust, right_thrust, desired_cable_tension, spool_velocity_cmd)
+
+        control_tangential_axis = (math.cos(self.theta), math.sin(self.theta))
+        tangential_force = dot2(drone_force, control_tangential_axis)
+        desired_drone_force = drone_force
+        speed_error = sub2(reference.velocity, self.estimated_payload_velocity)
+        position_error = sub2(reference.position, self.measured_payload)
+        swing_energy = 0.5 * mass * (
+            dot2(speed_error, speed_error)
+            + dot2(position_error, position_error)
+        )
         state = self.snapshot(
             left_thrust,
             right_thrust,
             tension,
             tangential_force,
             spool_velocity_cmd,
-            drone_accel_cmd,
+            math.hypot(drone_force[0], drone_force[1]) / max(mass, 1e-9),
             desired_cable_tension,
             desired_drone_force,
             drone_force,
             cable_force,
             wind_force,
-            saturated,
+            self.cable_tension_saturated,
             reference,
-            desired_tangential_force=desired_tangential_force,
-            desired_attitude_torque=desired_attitude_torque,
+            desired_tangential_force=tangential_force,
+            desired_attitude_torque=0.0,
             attitude_torque=net_attitude_torque,
             cable_torque=cable_torque,
             left_torque=left_torque,
             right_torque=right_torque,
-            allocation_residual=allocation_residual,
-            radial_position_error_m=energy_command.radial_position_error_m,
-            radial_velocity_error_m_s=energy_command.radial_velocity_error_m_s,
-            tangential_position_error_m=energy_command.tangential_position_error_m,
-            tangential_velocity_error_m_s=energy_command.tangential_velocity_error_m_s,
-            swing_energy_J=energy_command.swing_energy_J,
-            swing_power_W=energy_command.swing_power_W,
-            clf_margin_W=energy_command.clf_margin_W,
-            clf_projected_accel_m_s2=energy_command.clf_projected_accel_m_s2,
+            allocation_residual=0.0,
+            radial_position_error_m=position_error[1],
+            radial_velocity_error_m_s=speed_error[1],
+            tangential_position_error_m=position_error[0],
+            tangential_velocity_error_m_s=speed_error[0],
+            swing_energy_J=swing_energy,
+            mpc_solution=solution,
         )
         self.history.append(state)
         if len(self.history) > 6000:
             self.history = self.history[-6000:]
         return state
 
-    @staticmethod
-    def _allocate_support_force(
-        required_force: Vec2,
-        cable_axis: Vec2,
-        left_axis: Vec2,
-        right_axis: Vec2,
-        params: SimParams,
-    ) -> tuple[float, float, float, float]:
-        """Bounded weighted allocation over cable tension and two drone thrusts."""
-
-        vertical_efficiency = max(0.0, cable_axis[1])
-        efficiency_floor = max(1e-3, params.min_cable_vertical_efficiency)
-        geometry_ratio = (1.0 - vertical_efficiency) / max(vertical_efficiency, efficiency_floor)
-        cable_cost = params.cable_tension_cost * (1.0 + params.cable_geometry_cost * geometry_ratio * geometry_ratio)
-        values, residual = WallToolSimulator._solve_bounded_force_allocation(
-            required_force=required_force,
-            axes=(cable_axis, left_axis, right_axis),
-            upper_bounds=(params.max_spool_tension, params.max_thrust_per_drone, params.max_thrust_per_drone),
-            effort_costs=(cable_cost, params.drone_thrust_cost, params.drone_thrust_cost),
-        )
-        return values[0], values[1], values[2], residual
-
-    @staticmethod
-    def _allocate_support_wrench(
-        required_force: Vec2,
-        required_torque: float,
-        cable_axis: Vec2,
-        left_axis: Vec2,
-        right_axis: Vec2,
-        cable_arm: Vec2,
-        left_arm: Vec2,
-        right_arm: Vec2,
-        params: SimParams,
-    ) -> tuple[float, float, float, float]:
-        vertical_efficiency = max(0.0, cable_axis[1])
-        efficiency_floor = max(1e-3, params.min_cable_vertical_efficiency)
-        geometry_ratio = (1.0 - vertical_efficiency) / max(vertical_efficiency, efficiency_floor)
-        cable_cost = params.cable_tension_cost * (1.0 + params.cable_geometry_cost * geometry_ratio * geometry_ratio)
-        torque_scale = max(params.torque_residual_length_scale, 1e-6)
-        required_wrench = (required_force[0], required_force[1], required_torque / torque_scale)
-        values, residual = WallToolSimulator._solve_bounded_allocation(
-            required=required_wrench,
-            axes=(
-                (cable_axis[0], cable_axis[1], cross2(cable_arm, cable_axis) / torque_scale),
-                (left_axis[0], left_axis[1], cross2(left_arm, left_axis) / torque_scale),
-                (right_axis[0], right_axis[1], cross2(right_arm, right_axis) / torque_scale),
-            ),
-            upper_bounds=(params.max_spool_tension, params.max_thrust_per_drone, params.max_thrust_per_drone),
-            effort_costs=(cable_cost, params.drone_thrust_cost, params.drone_thrust_cost),
-        )
-        return values[0], values[1], values[2], residual
-
-    @staticmethod
-    def _solve_bounded_force_allocation(
-        required_force: Vec2,
-        axes: Sequence[Vec2],
-        upper_bounds: Sequence[float],
-        effort_costs: Sequence[float],
-    ) -> tuple[tuple[float, ...], float]:
-        return WallToolSimulator._solve_bounded_allocation(required_force, axes, upper_bounds, effort_costs)
-
-    @staticmethod
-    def _solve_bounded_allocation(
-        required: Sequence[float],
-        axes: Sequence[Sequence[float]],
-        upper_bounds: Sequence[float],
-        effort_costs: Sequence[float],
-    ) -> tuple[tuple[float, ...], float]:
-        """Active-set solve: least force residual first, minimum effort second."""
-
-        count = len(axes)
-        dimension = len(required)
-        best_values: tuple[float, ...] | None = None
-        best_residual_squared = math.inf
-        best_residual = math.inf
-        best_effort = math.inf
-        states = ("free", "low", "high")
-
-        for active_state in itertools.product(states, repeat=count):
-            values = [0.0] * count
-            free_indices: list[int] = []
-            for index, state in enumerate(active_state):
-                if state == "free":
-                    free_indices.append(index)
-                elif state == "high":
-                    values[index] = float(upper_bounds[index])
-
-            fixed_force = tuple(0.0 for _ in range(dimension))
-            for index, value in enumerate(values):
-                if index not in free_indices:
-                    fixed_force = addn(fixed_force, scalen(axes[index], value))
-            remaining_force = subn(required, fixed_force)
-
-            if free_indices:
-                try:
-                    if len(free_indices) <= dimension:
-                        normal_matrix = tuple(
-                            tuple(
-                                sum(axes[row_index][dim] * axes[col_index][dim] for dim in range(dimension))
-                                + (1e-10 if row_index == col_index else 0.0)
-                                for col_index in free_indices
-                            )
-                            for row_index in free_indices
-                        )
-                        normal_rhs = tuple(dotn(axes[index], remaining_force) for index in free_indices)
-                        free_values = solve_linear_system(normal_matrix, normal_rhs)
-                    else:
-                        inverse_costs = [1.0 / max(1e-12, effort_costs[index]) for index in free_indices]
-                        weighted_axis_matrix = tuple(
-                            tuple(
-                                sum(
-                                    inverse_costs[local] * axes[index][row] * axes[index][col]
-                                    for local, index in enumerate(free_indices)
-                                )
-                                + (1e-10 if row == col else 0.0)
-                                for col in range(dimension)
-                            )
-                            for row in range(dimension)
-                        )
-                        multipliers = solve_linear_system(weighted_axis_matrix, remaining_force)
-                        free_values = tuple(
-                            inverse_costs[local] * dotn(axes[index], multipliers)
-                            for local, index in enumerate(free_indices)
-                        )
-                except ValueError:
-                    continue
-                feasible = True
-                for local_index, value in enumerate(free_values):
-                    actuator_index = free_indices[local_index]
-                    if value < -1e-8 or value > upper_bounds[actuator_index] + 1e-8:
-                        feasible = False
-                        break
-                    values[actuator_index] = clamp(value, 0.0, upper_bounds[actuator_index])
-                if not feasible:
-                    continue
-
-            produced_force = tuple(0.0 for _ in range(dimension))
-            effort_objective = 0.0
-            for index, value in enumerate(values):
-                produced_force = addn(produced_force, scalen(axes[index], value))
-                effort_objective += effort_costs[index] * value * value
-            force_error = subn(produced_force, required)
-            residual_squared = dotn(force_error, force_error)
-            if (
-                residual_squared < best_residual_squared - 1e-12
-                or abs(residual_squared - best_residual_squared) <= 1e-12
-                and effort_objective < best_effort
-            ):
-                best_residual_squared = residual_squared
-                best_values = tuple(values)
-                best_residual = math.sqrt(residual_squared)
-                best_effort = effort_objective
-
-        if best_values is None:
-            raise RuntimeError("bounded force allocation has no feasible active set")
-        return best_values, best_residual
+    def step(self) -> SimState:
+        return self._step_tool_head_nmpc()
 
     def snapshot(
         self,
@@ -2855,6 +2032,7 @@ class WallToolSimulator:
         swing_power_W: float = 0.0,
         clf_margin_W: float = 0.0,
         clf_projected_accel_m_s2: float = 0.0,
+        mpc_solution: MPCSolution | None = None,
     ) -> SimState:
         payload = self._payload_from_state()
         tool_head = payload
@@ -2894,8 +2072,6 @@ class WallToolSimulator:
             measured_tool_error=distance2(self.measured_payload, desired_tool_head),
             spool_velocity_cmd=spool_velocity_cmd,
             drone_accel_cmd=drone_accel_cmd,
-            reference_speed_scale=self.reference_speed_scale,
-            reference_governor_scale=self.reference_governor_scale,
             desired_cable_tension=desired_cable_tension,
             measured_cable_length=self.measured_cable_length,
             measured_tension=self.measured_tension,
@@ -2939,6 +2115,13 @@ class WallToolSimulator:
             swing_power_W=swing_power_W,
             clf_margin_W=clf_margin_W,
             clf_projected_accel_m_s2=clf_projected_accel_m_s2,
+            mpc_predicted_path=mpc_solution.predicted_positions if mpc_solution is not None else (),
+            mpc_predicted_attitudes=mpc_solution.predicted_attitudes if mpc_solution is not None else (),
+            mpc_predicted_tensions=mpc_solution.predicted_tensions if mpc_solution is not None else (),
+            mpc_predicted_spool_speeds=mpc_solution.predicted_spool_speeds if mpc_solution is not None else (),
+            mpc_status=mpc_solution.status if mpc_solution is not None else "",
+            mpc_solve_time_s=mpc_solution.solve_time_s if mpc_solution is not None else 0.0,
+            mpc_objective=mpc_solution.objective if mpc_solution is not None else 0.0,
         )
 
 
@@ -3134,11 +2317,12 @@ class WallToolApp:
         self.trace_line, = self.ax.plot([], [], color="#2b7a78", linewidth=2.0, alpha=0.80, zorder=2)
         self.desired_trace_line, = self.ax.plot([], [], color="#8a5b22", linewidth=1.8, linestyle=":", alpha=0.90, zorder=2)
         self.path_line, = self.ax.plot([], [], color="#555555", linewidth=1.5, linestyle="--", alpha=0.72, zorder=4)
+        self.mpc_prediction_line, = self.ax.plot([], [], color="#6b46c1", linewidth=1.7, linestyle="-.", alpha=0.90, zorder=6)
         self.draw_preview_line, = self.ax.plot([], [], color="#f39c12", linewidth=2.0, alpha=0.85, zorder=8)
         self.structure_line, = self.ax.plot([], [], color="#4a4a4a", linewidth=2.2, alpha=0.55, zorder=5)
         self.cable_mount_point, = self.ax.plot([], [], marker="o", linestyle="none", color="#111111", markersize=4.2, zorder=13)
         self.attitude_line, = self.ax.plot([], [], color="#111111", linewidth=1.6, alpha=0.85, zorder=13)
-        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9)
+        self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9, visible=False)
         self.waypoint_points, = self.ax.plot([], [], marker="o", linestyle="none", color="#8a5b22", markersize=3.0, alpha=0.45, zorder=9)
         self.target_point, = self.ax.plot(
             [],
@@ -3205,9 +2389,7 @@ class WallToolApp:
 
         self.spool_velocity_ratio_line, = self.reel_ax.plot([], [], color="#2b6cb0", linewidth=1.2, label="spool speed")
         self.spool_accel_ratio_line, = self.reel_ax.plot([], [], color="#c53030", linewidth=1.0, alpha=0.78, label="spool accel")
-        self.speed_scale_line, = self.reel_ax.plot([], [], color="#4a5568", linewidth=1.1, label="ref scale")
-        self.governor_scale_line, = self.reel_ax.plot([], [], color="#111111", linewidth=1.0, linestyle=":", label="gov cap")
-        self._format_ratio_axis(self.reel_ax, "Reel And Governor", "ratio")
+        self._format_ratio_axis(self.reel_ax, "Reel Command", "ratio")
         self.reel_ax.set_xlabel("time [s]", fontsize=7.8)
 
     @staticmethod
@@ -3288,12 +2470,19 @@ class WallToolApp:
         pending_path = self.sim.trajectory.pending_path()
         if self.show_path and len(pending_path) >= 1:
             self.path_line.set_data([point[0] for point in pending_path], [point[1] for point in pending_path])
-            self.reference_point.set_data([state.reference[0]], [state.reference[1]])
+            self.reference_point.set_data([], [])
             self.waypoint_points.set_data([], [])
         else:
             self.path_line.set_data([], [])
             self.reference_point.set_data([], [])
             self.waypoint_points.set_data([], [])
+        if state.mpc_predicted_path:
+            self.mpc_prediction_line.set_data(
+                [point[0] for point in state.mpc_predicted_path],
+                [point[1] for point in state.mpc_predicted_path],
+            )
+        else:
+            self.mpc_prediction_line.set_data([], [])
         if self.show_target:
             self.target_point.set_data([state.target[0]], [state.target[1]])
         else:
@@ -3371,7 +2560,7 @@ class WallToolApp:
         speed_ratio = speed / max(params.work_contact_speed_limit_mps, 1e-9)
         accel_ratio = acceleration / max(params.reference_accel_limit_mps2, 1e-9)
         body_rate_ratio = abs(state.angular_velocity) / max(params.work_contact_angular_rate_limit_rad_s, 1e-9)
-        swing_energy_ratio = state.swing_energy_J / max(params.miesc_energy_plot_limit_J, 1e-9)
+        swing_energy_ratio = state.swing_energy_J / max(params.mpc_energy_plot_limit_J, 1e-9)
         spool_speed_ratio = abs(state.spool_velocity_cmd) / max(params.max_spool_speed, 1e-9)
         spool_accel_ratio = self._latest_spool_accel_ratio()
         cable_support = state.cable_vertical_force / weight
@@ -3384,7 +2573,7 @@ class WallToolApp:
         window_text = self._window_metrics_text()
         return (
             f"t {state.t:6.1f}s  wp {state.active_waypoints:2d}  {controller_state}\n"
-            f"contact {contact_state:>3s} {state.contact_force:4.2f}N  ref {100.0 * state.reference_speed_scale:3.0f}%\n"
+            f"contact {contact_state:>3s} {state.contact_force:4.2f}N  mpc {1000.0 * state.mpc_solve_time_s:4.1f}ms\n"
             f"task   trk {tracking_ratio:4.2f}  spd {speed_ratio:4.2f}  body {body_rate_ratio:4.2f}\n"
             f"smooth acc {accel_ratio:4.2f}  E {swing_energy_ratio:4.2f}  reel {spool_accel_ratio:4.2f}\n"
             f"cable  sup {100.0 * cable_support:4.0f}%  power {100.0 * drone_power_ratio:4.0f}%  res {100.0 * residual_fraction:4.1f}%\n"
@@ -3469,7 +2658,7 @@ class WallToolApp:
             for sample in samples
         ]
         swing_energy_ratio = [
-            sample.swing_energy_J / max(params.miesc_energy_plot_limit_J, 1e-9)
+            sample.swing_energy_J / max(params.mpc_energy_plot_limit_J, 1e-9)
             for sample in samples
         ]
         display_accel_ratio = self._moving_average(accel_ratio, 20)
@@ -3498,12 +2687,8 @@ class WallToolApp:
             spool_accel = abs((samples[index].spool_velocity_cmd - samples[index - 1].spool_velocity_cmd) / dt)
             spool_accel_ratio.append(spool_accel / max(params.spool_accel_limit_mps2, 1e-9))
         display_spool_accel_ratio = self._moving_average(spool_accel_ratio, 20)
-        speed_scale = [sample.reference_speed_scale for sample in samples]
-        governor_scale = [sample.reference_governor_scale for sample in samples]
         self.spool_velocity_ratio_line.set_data(times, spool_speed_ratio)
         self.spool_accel_ratio_line.set_data(times, display_spool_accel_ratio)
-        self.speed_scale_line.set_data(times, speed_scale)
-        self.governor_scale_line.set_data(times, governor_scale)
 
         x_right = max(self.live_window_s, latest_t)
         x_left = max(0.0, x_right - self.live_window_s)
@@ -3511,7 +2696,7 @@ class WallToolApp:
             (self.task_ax, tracking_ratio + speed_ratio + contact_valid),
             (self.smooth_ax, display_accel_ratio + body_rate_ratio + cable_rate_ratio + swing_energy_ratio),
             (self.cable_ax, cable_support + drone_power + thrust_fraction),
-            (self.reel_ax, spool_speed_ratio + display_spool_accel_ratio + speed_scale + governor_scale),
+            (self.reel_ax, spool_speed_ratio + display_spool_accel_ratio),
         )
         for axis, values in plot_groups:
             axis.set_xlim(x_left, x_right)
