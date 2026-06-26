@@ -5,7 +5,7 @@ This is the main controller package for the wall-tool project.
 The chosen architecture is:
 
 - `tool_head_nmpc` nonlinear MPC over the wall-plane payload/cable/drone model,
-- direct optimization of left drone thrust, right drone thrust, desired cable
+- direct optimization of left side-motor thrust, right side-motor thrust, desired cable
   support/tension, and reel feedforward velocity,
 - the simulated hardware only actuates reel speed; desired tension is realized
   through a load-cell feedback reel-speed loop and a stiff cable model,
@@ -16,7 +16,9 @@ The chosen architecture is:
 - tool-head tracking is the primary objective; drone power, reel motion, input
   rate, slack, and unnecessary tilt are secondary costs,
 - cable support is cheap but bounded, so the optimizer uses cable strength when
-  it reduces drone effort without exceeding 100% vertical support,
+  it reduces motor effort without exceeding 100% vertical support,
+- one integrated wall-tool payload carries the tool head and both canted side
+  motors; old internal `drone_*` names remain only as controller variable names,
 - boundary-aware smooth coverage references that stay inside the facade work bay,
 - acceleration/jerk-limited quintic timing for each coverage segment,
 - geometric path-horizon sampling instead of a dt-advanced moving reference point,
@@ -68,7 +70,7 @@ Use `--mode log` only when you want to generate fresh reports. Generated output 
 
 - Tracking error should settle without large residual oscillation.
 - Cable tension should stay positive and smooth.
-- Cable support fraction should be meaningful; otherwise the drones are doing too much work.
+- Cable support fraction should be meaningful; otherwise the side motors are doing too much work.
 - Max thrust fraction near `1.0` means the path is too aggressive or geometry is poor.
 - MPC status should normally be `Solve_Succeeded`; a held previous feasible
   command means the last nonlinear solve failed.
@@ -91,7 +93,7 @@ future horizon and passes the measured state
 optimized command is applied to the plant:
 
 ```text
-[left_thrust, right_thrust, cable_tension, reel_velocity]
+[left_motor_thrust, right_motor_thrust, cable_tension, reel_velocity]
 ```
 
 The UI draws the chosen predicted path as a single purple dash-dot horizon.

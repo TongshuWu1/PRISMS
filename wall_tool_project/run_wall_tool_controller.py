@@ -16,8 +16,10 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+WALL_TOOL_2D_ROOT = PROJECT_ROOT / "wall_tool_2d"
+for path in (WALL_TOOL_2D_ROOT, PROJECT_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 DEFAULT_MODE = "qt"
 
@@ -68,7 +70,7 @@ def run_logged(output_dir: Path | None = None) -> int:
     print(f"Work-mode contact valid fraction: {float(summary.get('work_mode_contact_valid_fraction', 0.0)):.3f}")
     print(f"Mean contact force [N]: {float(summary.get('mean_contact_force_N', 0.0)):.3f}")
     print(f"Mean cable support fraction: {float(summary['mean_cable_support_fraction']):.3f}")
-    print(f"Mean drone power ratio: {float(summary['mean_drone_power_ratio']):.3f}")
+    print(f"Mean motor power ratio: {float(summary['mean_drone_power_ratio']):.3f}")
     print(f"Mean swing energy [J]: {float(summary.get('mean_swing_energy_J', 0.0)):.6f}")
     print(f"Max thrust fraction: {float(summary['max_thrust_fraction']):.3f}")
     print(f"Thrust-limit active fraction: {float(summary['thrust_limit_active_fraction']):.4f}")

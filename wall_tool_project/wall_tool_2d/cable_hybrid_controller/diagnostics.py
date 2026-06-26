@@ -613,11 +613,11 @@ def plot_session(
 
     fig, axes = plt.subplots(3, 1, figsize=(11.0, 8.5), sharex=True, constrained_layout=True)
     axes[0].plot(t, [float(row["cable_support_fraction"]) for row in rows], label="cable")
-    axes[0].plot(t, [float(row["drone_vertical_support_fraction"]) for row in rows], label="drones")
+    axes[0].plot(t, [float(row["drone_vertical_support_fraction"]) for row in rows], label="side motors")
     axes[0].set_ylabel("weight support")
     axes[0].legend()
     axes[1].plot(t, [float(row["drone_power_ratio"]) for row in rows])
-    axes[1].set_ylabel("drone power ratio")
+    axes[1].set_ylabel("motor power ratio")
     axes[2].plot(t, [float(row["spool_reel_in_power_W"]) for row in rows], label="reel-in power")
     axes[2].set_ylabel("power [W]")
     axes[2].set_xlabel("time [s]")
@@ -717,7 +717,7 @@ def plot_controller_dashboard(
         "coverage": coverage_fraction_from_rows(rows, mission),
         "valid contact": _mean(_values(rows, "contact_valid")),
         "cable support": _mean(_values(rows, "cable_support_fraction")),
-        "1 - drone power": max(0.0, 1.0 - _mean(_values(rows, "drone_power_ratio"))),
+        "1 - motor power": max(0.0, 1.0 - _mean(_values(rows, "drone_power_ratio"))),
         "thrust margin": max(0.0, 1.0 - max(_values(rows, "max_thrust_fraction"))),
         "no slack": 1.0 - _mean(_values(rows, "slack")),
     }
@@ -779,7 +779,7 @@ def plot_controller_dashboard(
     axes[1, 0].legend(fontsize=7)
 
     axes[1, 1].plot(t, _values(rows, "cable_support_fraction"), label="cable support")
-    axes[1, 1].plot(t, _values(rows, "drone_power_ratio"), label="drone power ratio")
+    axes[1, 1].plot(t, _values(rows, "drone_power_ratio"), label="motor power ratio")
     axes[1, 1].plot(t, _values(rows, "max_thrust_fraction"), label="max thrust fraction")
     axes[1, 1].set_title("Efficiency And Actuator Use")
     axes[1, 1].set_xlabel("time [s]")
@@ -981,9 +981,9 @@ def plot_efficiency_phase(rows: Sequence[dict[str, float | int]], output_dir: Pa
         s=5,
         cmap="viridis",
     )
-    axes[0, 0].set_title("Cable Geometry vs Drone Power")
+    axes[0, 0].set_title("Cable Geometry vs Motor Power")
     axes[0, 0].set_xlabel("cable vertical efficiency")
-    axes[0, 0].set_ylabel("drone power ratio")
+    axes[0, 0].set_ylabel("motor power ratio")
     fig.colorbar(scatter, ax=axes[0, 0], label="tracking error [m]")
 
     axes[0, 1].scatter(
@@ -995,7 +995,7 @@ def plot_efficiency_phase(rows: Sequence[dict[str, float | int]], output_dir: Pa
     )
     axes[0, 1].set_title("Load Sharing Tradeoff")
     axes[0, 1].set_xlabel("cable support fraction")
-    axes[0, 1].set_ylabel("drone power ratio")
+    axes[0, 1].set_ylabel("motor power ratio")
 
     axes[1, 0].scatter(
         _values(sample, "spool_velocity_cmd_m_s"),
@@ -1037,7 +1037,7 @@ def plot_segment_scorecard(rows: Sequence[dict[str, float | int]], output_dir: P
     axes[2].set_ylim(0.0, 1.05)
     axes[2].set_ylabel("valid contact")
     axes[3].plot(segment_ids, _values(segments, "mean_cable_support_fraction"), marker="o", label="cable support")
-    axes[3].plot(segment_ids, _values(segments, "mean_drone_power_ratio"), marker="o", label="drone power")
+    axes[3].plot(segment_ids, _values(segments, "mean_drone_power_ratio"), marker="o", label="motor power")
     axes[3].set_xlabel("segment")
     axes[3].set_ylabel("fraction")
     axes[3].legend(fontsize=8)

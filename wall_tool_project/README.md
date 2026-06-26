@@ -1,28 +1,33 @@
-# Wall Tool Controller Project
+# Wall Tool Project
 
-This project contains the cable-suspended wall-tool controller work.
+Cable-suspended wall inspection and drawing prototype for PRISMS.
 
-The main controller folder is:
-
-```text
-cable_hybrid_controller/
-```
-
-The simulator backend is:
+The project is split into two layers:
 
 ```text
-wall_tool_sim/
+wall_tool_2d/
+  cable_hybrid_controller/    validated 2D NMPC controller, diagnostics, UI
+  wall_tool_sim/              2.5D wall-plane simulator and geometry helpers
+
+wall_tool_3d/
+  coppeliasim_wall_tool/      CoppeliaSim scene generator and 3D run bridge
+  scene/                      generated CoppeliaSim scene/model outputs
 ```
 
-## Run In PyCharm
+Root run files stay at this level so PyCharm remains simple:
 
-Right-click this one file:
+```text
+run_wall_tool_controller.py   2D Qt/Tk/Matplotlib/log/quick controller runner
+run_wall_tool_coppeliasim.py  3D CoppeliaSim wall-tool scene runner
+```
 
-- `run_wall_tool_controller.py`
+## Run 2D Controller
 
-Default mode opens the hybrid Qt controller UI. It uses Matplotlib for the
-normal wall/robot render and PyQtGraph for fast realtime evaluation plots. Use
-script arguments when needed:
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode qt
+```
+
+Useful modes:
 
 ```text
 --mode qt       hybrid Matplotlib scene + PyQtGraph evaluation UI
@@ -32,54 +37,76 @@ script arguments when needed:
 --mode quick    short smoke test
 ```
 
-The chosen controller is `tool_head_nmpc`: a nonlinear model-predictive
-controller for tool-head path tracking with cable-efficient load sharing:
+Smoke check:
 
-- the desired input is the actual path horizon, not a hidden moving reference
-  point,
-- the NMPC optimizes future payload position, velocity, attitude, cable length,
-  left/right drone thrust, cable tension, and reel speed,
-- hard constraints include wall bounds, attitude limits, drone thrust limits,
-  cable tension limits, reel speed/acceleration limits, and taut steel-cable
-  geometry,
-- the cable is treated as an inextensible unilateral support in the MPC branch:
-  it can pull when taut, cannot push, and cannot carry more than 100% vertical
-  support,
-- body tilt is not a commanded task; the solver tilts only when that improves
-  tracking or reduces drone effort over the lookahead horizon,
-- point clicks and dragged paths use the same sampled path horizon,
-- the Qt and Matplotlib UIs show the single chosen MPC prediction horizon,
-- smooth facade trajectory support remains available for larger-wall coverage,
-- 2.5D wall-normal contact dynamics remain available for cleaning/inspection
-  quality,
-- `6.0 m x 6.0 m` wall with a larger `4.2 m x 4.15 m` cleaning bay,
-- nominal no-wind facade mission speed of `0.16 m/s`.
-
-The live Qt UI lets you click a target, Shift-click to append a target, or hold
-the mouse button down and draw a smooth path for the robot to follow. PyQtGraph
-shows four fast evaluation plots: task validity, smoothness/energy,
-cable/actuator use, and reel behavior. All limit plots use a normalized
-`1.0` line so crossings are immediately meaningful.
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode quick --duration 12
+```
 
 Tune the selected controller in:
 
 ```text
-cable_hybrid_controller/config.py
+wall_tool_2d/cable_hybrid_controller/config.py
 ```
 
-That file contains mission geometry, contact limits, path speed, MPC horizon,
-solver settings, objective weights, cable/reel limits, and actuator limits.
+## Run 3D CoppeliaSim Scene
 
-## Check Current Controller
+The 3D runner launches CoppeliaSim if it is not already listening, regenerates
+the scene, starts the simulation, and runs the wall tool as a dynamic
+CoppeliaSim plant. The payload is a single integrated body, the two side motors
+apply thrust at the same canted axes as the 2D model, the reel enforces a taut
+non-elastic cable approximation, and the propeller joints spin from motor RPM.
+It also opens the native 2D wall-tool UI as a controller/spectator: click the
+wall, use append mode, or draw a path in the 2D UI, and the live 3D
+CoppeliaSim payload follows while tension, pen error, motor RPM, and trace
+update from CoppeliaSim feedback.
+
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py
+```
+
+That default command is open-ended: close the 2D controller board or press
+Ctrl+C in the terminal to stop it.
+
+For a batch smoke test without the controller board:
+
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --no-control-ui --duration 2
+```
+
+If CoppeliaSim is installed somewhere else:
+
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --coppeliasim-exe "C:\path\to\coppeliaSim.exe"
+```
+
+Generated outputs:
 
 ```text
-.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode quick --duration 12
+wall_tool_3d/scene/wall_tool_pen_scene.ttt
+wall_tool_3d/scene/wall_tool_payload_model.ttm
 ```
 
-For a full generated report, run:
+Use the old visual playback mode for comparison:
 
-```text
-.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py --mode log
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --plant-mode mirror
 ```
 
-Generated output folders are intentionally not kept in this cleaned checkout.
+The dynamic mode still reuses the 2D NMPC as the command source, but it syncs
+position, velocity, pitch, reel length, and tension from the CoppeliaSim body
+before each solve. The next engineering step is a controller pass that treats
+the CoppeliaSim plant as the primary estimator/plant instead of adapting the
+2D simulator state.
+
+## Active Model
+
+The current robot is one integrated rectangular-cage wall-tool payload with:
+
+- two fixed side motors canted about 35 degrees from vertical,
+- a top cable mount connected to an anchor/reel,
+- a pen/toolhead at the wall face,
+- 2D controller state `x = [p_x, p_z, v_x, v_z, phi, omega, l]^T`,
+- command `u = [F_L, F_R, T, ldot_cmd]^T`.
+
+The selected control law is `tool_head_nmpc`.

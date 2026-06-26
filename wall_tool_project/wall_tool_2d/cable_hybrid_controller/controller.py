@@ -3,9 +3,10 @@
 
 This package is intentionally opinionated: it exposes one controller stack,
 not a benchmark menu. The chosen stack is a nonlinear MPC that tracks the
-tool-head path while optimizing drone thrust, cable tension, reel motion, and
-payload attitude over a finite horizon. In the plant, cable tension is realized
-by a speed-controlled reel with load-cell feedback rather than applied directly.
+tool-head path while optimizing side-motor thrust, cable tension, reel motion,
+and payload attitude over a finite horizon. In the plant, cable tension is
+realized by a speed-controlled reel with load-cell feedback rather than applied
+directly.
 """
 
 from __future__ import annotations

@@ -23,25 +23,25 @@ Generate fresh reports only when needed:
 
 Active Files
 ------------
-  cable_hybrid_controller/config.py
+  wall_tool_2d/cable_hybrid_controller/config.py
     Main tuning surface for mission geometry, path speed, MPC horizon,
     objective weights, constraints, solver limits, cable/reel limits, actuator
     limits, and contact settings.
 
-  cable_hybrid_controller/controller.py
+  wall_tool_2d/cable_hybrid_controller/controller.py
     Builds SimParams from facade defaults plus config.py overrides.
 
-  cable_hybrid_controller/mpc/model.py
+  wall_tool_2d/cable_hybrid_controller/mpc/model.py
     NMPC data contracts.
 
-  cable_hybrid_controller/mpc/solver.py
+  wall_tool_2d/cable_hybrid_controller/mpc/solver.py
     CasADi/IPOPT nonlinear MPC solver.
 
-  wall_tool_sim/wall_tool_ui.py
+  wall_tool_2d/wall_tool_sim/wall_tool_ui.py
     2.5D simulator, trajectory sampling, active tool_head_nmpc plant branch,
     and inextensible steel-cable logic.
 
-  cable_hybrid_controller/qt_eval_ui.py
+  wall_tool_2d/cable_hybrid_controller/qt_eval_ui.py
     Preferred live UI with scene, telemetry, evaluation plots, and the chosen
     MPC horizon line.
 
@@ -51,8 +51,10 @@ The selected controller is:
   control_law = "tool_head_nmpc"
 
 The controller is a direct nonlinear MPC. It optimizes tool-head motion,
-payload tilt, cable support, drone thrust, and reel command over a finite
-horizon.
+payload tilt, cable support, side-motor thrust, and reel command over a finite
+horizon. The current physical story is one integrated wall-tool payload with
+two canted side motors; old internal drone naming remains only where it preserves
+the tuned state and command contract.
 
 State:
   x = [p_x, p_z, v_x, v_z, phi, omega, l]^T
@@ -80,7 +82,7 @@ Tilt Policy
 -----------
 Body pose is not a tracking task. Tilt is an internal optimization variable.
 The solver uses tilt only when it improves path tracking or reduces future
-drone effort, subject to the configured attitude bound.
+motor effort, subject to the configured attitude bound.
 
 Objective Priority
 ------------------
@@ -93,13 +95,13 @@ Primary objective:
   minimize tool-head tracking error over the horizon.
 
 Secondary objectives:
-  smooth velocity tracking, low drone effort, useful cable support, smooth reel
+  smooth velocity tracking, low motor effort, useful cable support, smooth reel
   command, smooth input changes, small angular rate, and no unnecessary tilt.
 
 Current Tuning
 --------------
 Tune only through:
-  cable_hybrid_controller/config.py
+  wall_tool_2d/cable_hybrid_controller/config.py
 
 Important values:
   BEST_PATH_SPEED = 0.16
@@ -151,7 +153,7 @@ Run `--mode log` to create fresh reports for the current NMPC controller.
 
 Next Work
 ---------
-1. Tune only through cable_hybrid_controller/config.py.
+1. Tune only through wall_tool_2d/cable_hybrid_controller/config.py.
 2. Inspect solve time distribution during longer coverage paths.
 3. If solve time is too high, reduce horizon or move from IPOPT to a faster
    real-time NMPC backend after the formulation is validated.

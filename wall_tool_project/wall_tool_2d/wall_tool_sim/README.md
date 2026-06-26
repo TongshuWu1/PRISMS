@@ -1,21 +1,21 @@
 # PRISMS Wall Tool Simulator Backend
 
 Standalone wall-plane simulator backend for the cable-suspended wall tooling idea.
-For day-to-day controller work, use `..\cable_hybrid_controller` or the
-root-level `run_wall_tool_controller.py` entry point.
+For day-to-day controller work, use `..\cable_hybrid_controller` through the
+project-level `..\..\run_wall_tool_controller.py` entry point.
 
 ## Run
 
 From the `wall_tool_project` folder:
 
 ```powershell
-python wall_tool_sim\wall_tool_ui.py
+python wall_tool_2d\wall_tool_sim\wall_tool_ui.py
 ```
 
 Use the constrained predictive planner for harder upper-corner tests:
 
 ```powershell
-python wall_tool_sim\wall_tool_ui.py --planner predictive
+python wall_tool_2d\wall_tool_sim\wall_tool_ui.py --planner predictive
 ```
 
 From the PRISMS workspace root, prefix the path with `wall_tool_project\`.
@@ -23,45 +23,42 @@ From the PRISMS workspace root, prefix the path with `wall_tool_project\`.
 ## Concept
 
 - A fixed anchor and spool at the top of the wall carries the payload weight.
-- The passive payload/tool is inside a custom straight hex-ended payload body, not a truncated-octahedral cage.
-- Two manipulator drone modules dock to the left and right payload hex faces, so the payload and drones form a flat same-surface line.
-- In the nominal flat docked pose, the left drone thrust axis points up-right and the right drone thrust axis points up-left.
-- Each manipulator drone is modeled as 50 g with 150 gf aggregate thrust authority.
-- The payload/tool module is modeled as 75 g.
-- The manipulator drones do not hover the system; they inject wall-plane force to swing and stabilize the suspended tool head.
+- The robot is one integrated wall-tool payload with a central tool head and two canted side motors.
+- In the nominal flat pose, the left motor thrust axis points up-right and the right motor thrust axis points up-left, about 35 degrees from vertical.
+- Each side motor assembly keeps the previous 50 g / 150 gf equivalent thrust authority.
+- The central tool payload is modeled as 75 g.
+- The side motors do not hover the system by themselves; they inject wall-plane force to swing and stabilize the suspended tool head.
 - The spool controls cable length velocity, so the system can reach wall targets with lower hover energy than a fully airborne tool carrier.
 
 ## Model
 
 - The suspended assembly is simulated as wall-plane translation plus one planar tilt state.
 - Facade work adds a 2.5D normal-to-wall contact state: positive gap means standoff, negative gap means wall penetration through a spring-damper contact model.
-- Total suspended mass is the 75 g passive payload/tool module plus two 50 g manipulator drones, so gravity acts on 175 g total.
-- Each manipulator drone can generate up to 150 gf, modeled as `0.150 * g = 1.47 N` of aggregate thrust along its tilted thrust axis.
-- The cable attaches to the top of the hex-ended payload body, so cable force can create torque about the tool center.
+- Total suspended mass is the 75 g central tool payload plus two 50 g side motor assemblies, so gravity acts on 175 g total.
+- Each side motor can generate up to 150 gf, modeled as `0.150 * g = 1.47 N` of aggregate thrust along its tilted thrust axis.
+- The cable attaches to the top of the integrated payload body, so cable force can create torque about the tool center.
 - The spool state is paid-out cable length, not tool position.
 - The spool actuator commands cable velocity and has a maximum reel speed.
 - The active `tool_head_nmpc` controller uses an inextensible unilateral steel-cable branch: cable length is constrained against anchor-to-mount distance, tension is selected by the NMPC only when taut, and vertical cable support is capped at 100% of suspended weight.
 - The controller state estimate comes from the simulated sensor channels: cable angle/rate, spool encoder length/velocity, cable tension, and IMU tilt/rate.
 - The active NMPC path samples the desired path over a finite horizon; there is no speed-scaling supervisor or fallback controller.
 - References are kept away from the near-anchor singular region where a tiny cable length would make the wall-plane model physically unrealistic.
-- The active NMPC controller optimizes payload position/velocity, tilt/rate, paid-out cable length, left/right thrust, cable tension, and reel velocity directly.
-- The spool and cable are optimized together with drone thrust; there is no separate radial policy or tangential pendulum controller.
-- In the active NMPC branch, tilt is not scheduled as a task. It is an internal optimization state constrained away from inversion; the solver uses tilt only when it improves tracking or reduces future drone effort.
-- Thrust allocation is part of the nonlinear program. The first optimized left thrust, right thrust, cable tension, and reel velocity command is applied each control period.
+- The active NMPC controller optimizes payload position/velocity, tilt/rate, paid-out cable length, left/right motor thrust, cable tension, and reel velocity directly.
+- The spool and cable are optimized together with side-motor thrust; there is no separate radial policy or tangential pendulum controller.
+- In the active NMPC branch, tilt is not scheduled as a task. It is an internal optimization state constrained away from inversion; the solver uses tilt only when it improves tracking or reduces future motor effort.
+- Thrust allocation is part of the nonlinear program. The first optimized left motor thrust, right motor thrust, cable tension, and reel velocity command is applied each control period.
 - The tool head is colocated with the center of the payload module in this 2-D model.
 - Click commands are converted into a moving Cartesian reference with position, velocity, and acceleration.
 - Single-click control creates a quintic straight-line reference from the current payload position to the clicked point.
 - The `predictive` planner option chooses a cable-friendly intermediate waypoint by scoring candidate routes against cable geometry, angular change, cable-length change, detour, and hard-target safety margins before issuing the smooth reference.
 - Append mode queues clicked points as a smooth quintic waypoint trajectory.
-- The manipulator drone cages are projected from the actual truncated-octahedron vertex set: all permutations of `(0, +/-1, +/-2)`, with 6 square faces and 8 hex faces.
-- The payload drawing is a straight body with left/right hexagonal docking faces.
-- Black docking seams mark the payload hex faces that mate to the manipulator hex faces.
+- The UI draws a single integrated body with two small canted motor pods instead of separate cages.
 
 ## Feedback Assumptions
 
 - Anchor-side feedback provides cable angle and cable tension.
 - The spool motor encoder provides cable payout length and payout velocity.
-- Manipulator-module IMU feedback provides the docked assembly planar tilt and tilt rate.
+- Body IMU feedback provides the integrated assembly planar tilt and tilt rate.
 - The controller receives no direct wall-plane tool position measurement.
 - Ground-truth position, velocity, and actual actuator forces are still stored for plotting and evaluation, but the controller does not use those perfect values directly.
 

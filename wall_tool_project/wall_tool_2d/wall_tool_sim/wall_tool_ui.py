@@ -3,8 +3,8 @@
 
 The model is intentionally small, but it is not just a drawing. The suspended
 system is integrated as a Cartesian point mass under gravity, finite cable
-tension, and two bounded tilted drone thrust axes. The controller is a nonlinear
-MPC with an inextensible unilateral cable model.
+tension, and two bounded tilted side-motor thrust axes. The controller is a
+nonlinear MPC with an inextensible unilateral cable model.
 Facade work adds a separate normal-to-wall gap/contact state.
 Click any point on the wall to command a smooth straight-line move, or enable
 append mode to queue a smooth multi-waypoint trajectory.
@@ -51,8 +51,6 @@ PLANNER_CHOICES = (PLANNER_DIRECT, PLANNER_CENTER_SETUP, PLANNER_PREDICTIVE)
 
 SQRT5 = math.sqrt(5.0)
 CAGE_ROT_Y_RAD = math.pi / 4.0
-VISUAL_DEPTH_X = 0.0
-VISUAL_DEPTH_Z = 0.0
 DRONE_RIGHT_HEX = (1, 1, 1)
 DRONE_LEFT_HEX = (-1, -1, -1)
 
@@ -131,27 +129,6 @@ def limit_norm2(vector: Sequence[float], max_norm: float) -> Vec2:
 
 def distance2(a: Sequence[float], b: Sequence[float]) -> float:
     return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
-
-
-def convex_hull(points: Sequence[Vec2]) -> list[Vec2]:
-    unique_points = sorted(set((float(point[0]), float(point[1])) for point in points))
-    if len(unique_points) <= 1:
-        return list(unique_points)
-
-    def cross(o: Vec2, a: Vec2, b: Vec2) -> float:
-        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
-    lower: list[Vec2] = []
-    for point in unique_points:
-        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0.0:
-            lower.pop()
-        lower.append(point)
-    upper: list[Vec2] = []
-    for point in reversed(unique_points):
-        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0.0:
-            upper.pop()
-        upper.append(point)
-    return lower[:-1] + upper[:-1]
 
 
 def wrap_angle(angle: float) -> float:
@@ -278,110 +255,48 @@ def project_local(point: Vec3, radius: float) -> Vec2:
     return rotated[0] * scale, rotated[2] * scale
 
 
-def project_local_visual(point: Vec3, radius: float, attitude: float = 0.0) -> Vec2:
-    scale = radius / SQRT5
-    rotated = rotate_cage(point)
-    wall_point = rotate2((rotated[0] * scale, rotated[2] * scale), attitude)
-    depth = rotated[1] * scale
-    return wall_point[0] + VISUAL_DEPTH_X * depth, wall_point[1] + VISUAL_DEPTH_Z * depth
-
-
-def projected_vertices(center: Vec2, radius: float, attitude: float = 0.0) -> list[Vec2]:
-    return [add2(center, rotate2(project_local(vertex, radius), attitude)) for vertex in GEOMETRY.vertices]
-
-
-def projected_faces(center: Vec2, radius: float, attitude: float = 0.0) -> list[list[Vec2]]:
-    points = projected_vertices(center, radius, attitude)
-    return [[points[index] for index in face.indices] for face in GEOMETRY.faces]
-
-
-def projected_edges(center: Vec2, radius: float, attitude: float = 0.0) -> list[tuple[Vec2, Vec2]]:
-    points = projected_vertices(center, radius, attitude)
-    return [(points[start], points[end]) for start, end in GEOMETRY.edges]
-
-
-def projected_face_polygon(center: Vec2, radius: float, normal_key: tuple[int, int, int], attitude: float = 0.0) -> list[Vec2]:
-    face = GEOMETRY.face_by_normal[normal_key]
-    points = projected_vertices(center, radius, attitude)
-    return [points[index] for index in face.indices]
-
-
 def projected_face_offset(radius: float, normal_key: tuple[int, int, int], attitude: float = 0.0) -> Vec2:
     return rotate2(project_local(GEOMETRY.face_by_normal[normal_key].center, radius), attitude)
 
 
-def visual_projected_vertices(center: Vec2, radius: float, attitude: float = 0.0) -> list[Vec2]:
-    return [add2(center, project_local_visual(vertex, radius, attitude)) for vertex in GEOMETRY.vertices]
+def oriented_box_polygon(center: Vec2, half_length: float, half_width: float, angle: float) -> list[Vec2]:
+    corners = (
+        (-half_length, -half_width),
+        (half_length, -half_width),
+        (half_length, half_width),
+        (-half_length, half_width),
+    )
+    return [add2(center, rotate2(corner, angle)) for corner in corners]
 
 
-def visual_projected_faces(center: Vec2, radius: float, attitude: float = 0.0) -> list[list[Vec2]]:
-    points = visual_projected_vertices(center, radius, attitude)
-    return [[points[index] for index in face.indices] for face in GEOMETRY.faces]
+def integrated_motor_center_offsets(params: "SimParams", attitude: float) -> tuple[Vec2, Vec2]:
+    """Actuator locations for the integrated side-motor body.
+
+    The centers intentionally match the previous two-module moment arms so
+    the simplified geometry keeps the active controller physics unchanged.
+    """
+    radius = params.cage_radius
+    left_payload_offset = rotate2((-params.payload_half_length, 0.0), attitude)
+    left_motor_offset = projected_face_offset(radius, DRONE_RIGHT_HEX, attitude)
+    right_payload_offset = rotate2((params.payload_half_length, 0.0), attitude)
+    right_motor_offset = projected_face_offset(radius, DRONE_LEFT_HEX, attitude)
+    left_gap = rotate2((-params.module_gap, 0.0), attitude)
+    right_gap = rotate2((params.module_gap, 0.0), attitude)
+    left_center_offset = sub2(add2(left_payload_offset, left_gap), left_motor_offset)
+    right_center_offset = sub2(add2(right_payload_offset, right_gap), right_motor_offset)
+    return left_center_offset, right_center_offset
 
 
-def visual_projected_edges(center: Vec2, radius: float, attitude: float = 0.0) -> list[tuple[Vec2, Vec2]]:
-    points = visual_projected_vertices(center, radius, attitude)
-    return [(points[start], points[end]) for start, end in GEOMETRY.edges]
+def integrated_motor_centers(params: "SimParams", payload: Vec2, attitude: float) -> tuple[Vec2, Vec2]:
+    left_offset, right_offset = integrated_motor_center_offsets(params, attitude)
+    return add2(payload, left_offset), add2(payload, right_offset)
 
 
-def visual_projected_face_polygon(
-    center: Vec2,
-    radius: float,
-    normal_key: tuple[int, int, int],
-    attitude: float = 0.0,
-) -> list[Vec2]:
-    face = GEOMETRY.face_by_normal[normal_key]
-    points = visual_projected_vertices(center, radius, attitude)
-    return [points[index] for index in face.indices]
-
-
-def visual_projected_face_offset(radius: float, normal_key: tuple[int, int, int], attitude: float = 0.0) -> Vec2:
-    return project_local_visual(GEOMETRY.face_by_normal[normal_key].center, radius, attitude)
-
-
-def module_extents(center: Vec2, radius: float, attitude: float = 0.0) -> tuple[float, float, float, float]:
-    points = projected_vertices(center, radius, attitude)
-    xs = [point[0] for point in points]
-    zs = [point[1] for point in points]
-    return min(xs), max(xs), min(zs), max(zs)
-
-
-def cable_mount_offset(radius: float, attitude: float = 0.0) -> Vec2:
-    points = projected_vertices((0.0, 0.0), radius, attitude)
-    max_z = max(point[1] for point in points)
-    top_points = [point for point in points if max_z - point[1] < 1e-8]
-    return sum(point[0] for point in top_points) / len(top_points), max_z
-
-
-def visual_cable_mount_offset(radius: float, attitude: float = 0.0) -> Vec2:
-    points = visual_projected_vertices((0.0, 0.0), radius, attitude)
-    max_z = max(point[1] for point in points)
-    top_points = [point for point in points if max_z - point[1] < 1e-8]
-    return sum(point[0] for point in top_points) / len(top_points), max_z
-
-
-def regular_hexagon(center: Vec2, radius: float, attitude: float = 0.0) -> list[Vec2]:
-    return [
-        add2(center, rotate2((radius * math.cos(attitude + index * math.pi / 3.0), radius * math.sin(attitude + index * math.pi / 3.0)), 0.0))
-        for index in range(6)
-    ]
-
-
-def payload_face_center(center: Vec2, half_length: float, attitude: float, side: int) -> Vec2:
-    return add2(center, rotate2((side * half_length, 0.0), attitude))
-
-
-def payload_face_polygon(center: Vec2, half_length: float, face_radius: float, attitude: float, side: int) -> list[Vec2]:
-    face_center = payload_face_center(center, half_length, attitude, side)
-    return regular_hexagon(face_center, face_radius, attitude + math.pi / 6.0)
-
-
-def payload_body_polygon(center: Vec2, half_length: float, face_radius: float, attitude: float) -> list[Vec2]:
-    left = payload_face_center(center, half_length, attitude, -1)
-    right = payload_face_center(center, half_length, attitude, 1)
-    top = rotate2((0.0, face_radius * 0.82), attitude)
-    bottom = rotate2((0.0, -face_radius * 0.82), attitude)
-    return [add2(left, top), add2(right, top), add2(right, bottom), add2(left, bottom)]
+def integrated_motor_axes(params: "SimParams", attitude: float) -> tuple[Vec2, Vec2]:
+    attitude_error = attitude - params.nominal_attitude_rad
+    left_axis = rotate2((math.sin(params.hex_face_tilt_rad), math.cos(params.hex_face_tilt_rad)), attitude_error)
+    right_axis = rotate2((-math.sin(params.hex_face_tilt_rad), math.cos(params.hex_face_tilt_rad)), attitude_error)
+    return left_axis, right_axis
 
 
 @dataclass(frozen=True)
@@ -1594,23 +1509,10 @@ class WallToolSimulator:
         return add2(payload, self._cable_mount_offset(attitude))
 
     def _module_center_offsets(self, attitude: float) -> tuple[Vec2, Vec2]:
-        radius = self.params.cage_radius
-        left_payload_offset = rotate2((-self.params.payload_half_length, 0.0), attitude)
-        left_drone_offset = projected_face_offset(radius, DRONE_RIGHT_HEX, attitude)
-        right_payload_offset = rotate2((self.params.payload_half_length, 0.0), attitude)
-        right_drone_offset = projected_face_offset(radius, DRONE_LEFT_HEX, attitude)
-
-        left_gap = rotate2((-self.params.module_gap, 0.0), attitude)
-        right_gap = rotate2((self.params.module_gap, 0.0), attitude)
-        left_center_offset = sub2(add2(left_payload_offset, left_gap), left_drone_offset)
-        right_center_offset = sub2(add2(right_payload_offset, right_gap), right_drone_offset)
-        return left_center_offset, right_center_offset
+        return integrated_motor_center_offsets(self.params, attitude)
 
     def _drone_axes(self, attitude: float) -> tuple[Vec2, Vec2]:
-        attitude_error = attitude - self.params.nominal_attitude_rad
-        left_axis = rotate2((math.sin(self.params.hex_face_tilt_rad), math.cos(self.params.hex_face_tilt_rad)), attitude_error)
-        right_axis = rotate2((-math.sin(self.params.hex_face_tilt_rad), math.cos(self.params.hex_face_tilt_rad)), attitude_error)
-        return left_axis, right_axis
+        return integrated_motor_axes(self.params, attitude)
 
     def _point_to_polar(self, point: Vec2) -> tuple[float, float]:
         attach_point = self._cable_mount_position(point, self.params.nominal_attitude_rad)
@@ -2152,46 +2054,7 @@ class WallToolSimulator:
         )
 
 
-class ModuleArtist:
-    def __init__(
-        self,
-        ax,
-        radius: float,
-        face_color: str,
-        edge_color: str,
-        label: str,
-        fill_alpha: float,
-        zorder: int,
-    ) -> None:
-        self.radius = radius
-        self.silhouette = Polygon(
-            [(0.0, 0.0)] * 6,
-            closed=True,
-            facecolor=face_color,
-            edgecolor=edge_color,
-            linewidth=1.6,
-            alpha=1.0,
-            zorder=zorder,
-        )
-        ax.add_patch(self.silhouette)
-        self.label = ax.text(
-            0.0,
-            0.0,
-            label,
-            ha="center",
-            va="center",
-            fontsize=7,
-            visible=bool(label),
-            zorder=zorder + 3,
-        )
-
-    def update(self, center: Vec2, attitude: float = 0.0) -> None:
-        points = visual_projected_vertices(center, self.radius, attitude)
-        self.silhouette.set_xy(convex_hull(points))
-        self.label.set_position(center)
-
-
-class PayloadArtist:
+class IntegratedToolArtist:
     def __init__(self, ax, params: SimParams, zorder: int) -> None:
         self.params = params
         self.body = Polygon(
@@ -2199,42 +2062,82 @@ class PayloadArtist:
             closed=True,
             facecolor="#f2cc60",
             edgecolor="#5c4512",
-            linewidth=1.4,
+            linewidth=1.5,
             alpha=1.0,
             zorder=zorder,
         )
-        self.left_face = Polygon(
-            [(0.0, 0.0)] * 6,
+        self.left_motor = Polygon(
+            [(0.0, 0.0)] * 4,
             closed=True,
-            facecolor="#f7d978",
-            edgecolor="#5c4512",
-            linewidth=1.4,
+            facecolor="#f7f7f7",
+            edgecolor="#111111",
+            linewidth=1.3,
             alpha=1.0,
-            zorder=zorder + 1,
+            zorder=zorder + 2,
         )
-        self.right_face = Polygon(
-            [(0.0, 0.0)] * 6,
+        self.right_motor = Polygon(
+            [(0.0, 0.0)] * 4,
             closed=True,
-            facecolor="#f7d978",
-            edgecolor="#5c4512",
-            linewidth=1.4,
+            facecolor="#f7f7f7",
+            edgecolor="#111111",
+            linewidth=1.3,
             alpha=1.0,
-            zorder=zorder + 1,
+            zorder=zorder + 2,
         )
-        ax.add_patch(self.body)
-        ax.add_patch(self.left_face)
-        ax.add_patch(self.right_face)
+        self.tool_pad = Circle(
+            (0.0, 0.0),
+            params.payload_hex_radius * 0.34,
+            facecolor="#8a4f00",
+            edgecolor="#4b2f05",
+            linewidth=1.1,
+            zorder=zorder + 4,
+        )
+        self.cable_tab = Polygon(
+            [(0.0, 0.0)] * 4,
+            closed=True,
+            facecolor="#d8b247",
+            edgecolor="#5c4512",
+            linewidth=1.0,
+            zorder=zorder + 3,
+        )
+        self.left_nozzle, = ax.plot([], [], color="#111111", linewidth=1.8, solid_capstyle="round", zorder=zorder + 4)
+        self.right_nozzle, = ax.plot([], [], color="#111111", linewidth=1.8, solid_capstyle="round", zorder=zorder + 4)
+        for patch in (self.body, self.left_motor, self.right_motor, self.tool_pad, self.cable_tab):
+            ax.add_patch(patch)
 
-    def update(self, center: Vec2, attitude: float = 0.0) -> None:
-        self.body.set_xy(
-            payload_body_polygon(center, self.params.payload_half_length, self.params.payload_hex_radius, attitude)
+    def update(
+        self,
+        center: Vec2,
+        attitude: float,
+        left_motor_center: Vec2 | None = None,
+        right_motor_center: Vec2 | None = None,
+    ) -> None:
+        params = self.params
+        if left_motor_center is None or right_motor_center is None:
+            left_motor_center, right_motor_center = integrated_motor_centers(params, center, attitude)
+        left_axis, right_axis = integrated_motor_axes(params, attitude)
+        body_half_length = max(
+            params.payload_half_length,
+            distance2(center, left_motor_center) + 0.09,
+            distance2(center, right_motor_center) + 0.09,
         )
-        self.left_face.set_xy(
-            payload_face_polygon(center, self.params.payload_half_length, self.params.payload_hex_radius, attitude, -1)
+        body_half_width = max(params.payload_hex_radius * 0.72, params.cage_radius * 0.33)
+        self.body.set_xy(oriented_box_polygon(center, body_half_length, body_half_width, attitude))
+        self.left_motor.set_xy(oriented_box_polygon(left_motor_center, params.cage_radius * 0.42, params.cage_radius * 0.22, math.atan2(left_axis[1], left_axis[0])))
+        self.right_motor.set_xy(oriented_box_polygon(right_motor_center, params.cage_radius * 0.42, params.cage_radius * 0.22, math.atan2(right_axis[1], right_axis[0])))
+        self.tool_pad.center = center
+        self.cable_tab.set_xy(
+            oriented_box_polygon(
+                add2(center, rotate2((0.0, params.payload_hex_radius * 0.78), attitude)),
+                params.payload_hex_radius * 0.28,
+                params.payload_hex_radius * 0.15,
+                attitude,
+            )
         )
-        self.right_face.set_xy(
-            payload_face_polygon(center, self.params.payload_half_length, self.params.payload_hex_radius, attitude, 1)
-        )
+        left_tip = add2(left_motor_center, scale2(left_axis, params.cage_radius * 0.50))
+        right_tip = add2(right_motor_center, scale2(right_axis, params.cage_radius * 0.50))
+        self.left_nozzle.set_data([left_motor_center[0], left_tip[0]], [left_motor_center[1], left_tip[1]])
+        self.right_nozzle.set_data([right_motor_center[0], right_tip[0]], [right_motor_center[1], right_tip[1]])
 
 
 class WallToolApp:
@@ -2364,13 +2267,7 @@ class WallToolApp:
         )
         self.tool_line, = self.ax.plot([], [], marker="o", linestyle="none", color="#8a4f00", markersize=6.0, zorder=13)
 
-        radius = params.cage_radius
-        self.payload_artist = PayloadArtist(self.ax, params, 6)
-        self.left_artist = ModuleArtist(self.ax, radius, "#f7f7f7", "black", "", 0.16, 6)
-        self.right_artist = ModuleArtist(self.ax, radius, "#f7f7f7", "black", "", 0.16, 6)
-
-        self.left_dock_seam, = self.ax.plot([], [], color="#111111", linewidth=3.0, solid_capstyle="round", zorder=14)
-        self.right_dock_seam, = self.ax.plot([], [], color="#111111", linewidth=3.0, solid_capstyle="round", zorder=14)
+        self.tool_artist = IntegratedToolArtist(self.ax, params, 6)
 
         self.left_axis_guide, = self.ax.plot([], [], color="#777777", linestyle="--", linewidth=1.0, zorder=10)
         self.right_axis_guide, = self.ax.plot([], [], color="#777777", linestyle="--", linewidth=1.0, zorder=10)
@@ -2456,18 +2353,7 @@ class WallToolApp:
         self.forces_button.on_clicked(lambda _event: self.toggle_layer("forces"))
 
     def module_centers(self, payload: Vec2, attitude: float) -> tuple[Vec2, Vec2]:
-        radius = self.params.cage_radius
-        left_payload_offset = rotate2((-self.params.payload_half_length, 0.0), attitude)
-        left_drone_offset = visual_projected_face_offset(radius, DRONE_RIGHT_HEX, attitude)
-        right_payload_offset = rotate2((self.params.payload_half_length, 0.0), attitude)
-        right_drone_offset = visual_projected_face_offset(radius, DRONE_LEFT_HEX, attitude)
-        left_gap = rotate2((-self.params.module_gap, 0.0), attitude)
-        right_gap = rotate2((self.params.module_gap, 0.0), attitude)
-        left_offset = sub2(add2(left_payload_offset, left_gap), left_drone_offset)
-        right_offset = sub2(add2(right_payload_offset, right_gap), right_drone_offset)
-        left_center = add2(payload, left_offset)
-        right_center = add2(payload, right_offset)
-        return left_center, right_center
+        return integrated_motor_centers(self.params, payload, attitude)
 
     def draw(self) -> None:
         state = self.sim.history[-1]
@@ -2514,23 +2400,11 @@ class WallToolApp:
 
         attitude = state.attitude
         left_center, right_center = self.module_centers(state.payload, attitude)
-        self.payload_artist.update(state.payload, attitude)
-        self.left_artist.update(left_center, attitude)
-        self.right_artist.update(right_center, attitude)
+        self.tool_artist.update(state.payload, attitude, left_center, right_center)
         self.structure_line.set_data(
             [left_center[0], state.payload[0], right_center[0]],
             [left_center[1], state.payload[1], right_center[1]],
         )
-
-        left_seam_center = payload_face_center(state.payload, params.payload_half_length, attitude, -1)
-        right_seam_center = payload_face_center(state.payload, params.payload_half_length, attitude, 1)
-        seam_half = params.payload_hex_radius
-        left_seam_start = add2(left_seam_center, rotate2((0.0, -seam_half), attitude))
-        left_seam_end = add2(left_seam_center, rotate2((0.0, seam_half), attitude))
-        right_seam_start = add2(right_seam_center, rotate2((0.0, -seam_half), attitude))
-        right_seam_end = add2(right_seam_center, rotate2((0.0, seam_half), attitude))
-        self.left_dock_seam.set_data([left_seam_start[0], left_seam_end[0]], [left_seam_start[1], left_seam_end[1]])
-        self.right_dock_seam.set_data([right_seam_start[0], right_seam_end[0]], [right_seam_start[1], right_seam_end[1]])
 
         cable_mount = add2(state.payload, rotate2((0.0, params.payload_hex_radius), attitude))
         self.cable_line.set_data([params.anchor[0], cable_mount[0]], [params.anchor[1], cable_mount[1]])

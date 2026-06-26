@@ -25,14 +25,12 @@ from matplotlib.patches import Circle, FancyArrowPatch, Polygon, Rectangle
 
 from cable_hybrid_controller.controller import BEST_PLANNER, command_controller, default_scenario, make_simulator
 from wall_tool_sim.wall_tool_ui import (
-    ModuleArtist,
-    PayloadArtist,
+    IntegratedToolArtist,
     SimState,
     Vec2,
     add2,
     distance2,
     normalize2,
-    rotate2,
     scale2,
 )
 
@@ -159,7 +157,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             ("contact", "Contact Force", "#2f855a"),
             ("tension", "Cable Tension", "#2f855a"),
             ("speed", "Tool Speed", "#2563a8"),
-            ("thrust", "Drone Thrust", "#6b46c1"),
+            ("thrust", "Motor Thrust", "#6b46c1"),
             ("solve", "MPC Solve", "#c05621"),
         )
         for index, (key, label, color) in enumerate(metric_specs):
@@ -204,8 +202,8 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             ("True pos", "true_pos"),
             ("Path pos", "desired_pos"),
             ("Path velocity", "ref_velocity"),
-            ("Left input", "left_input"),
-            ("Right input", "right_input"),
+            ("Left motor", "left_input"),
+            ("Right motor", "right_input"),
             ("Desired force", "desired_force"),
             ("MPC solve", "mpc_solve"),
             ("MPC status", "mpc_status"),
@@ -312,7 +310,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.reference_point, = self.ax.plot([], [], marker="o", color="#1f77b4", markersize=5.0, zorder=9, label="_nolegend_", visible=False)
         self.target_point, = self.ax.plot([], [], marker="o", markerfacecolor="none", markeredgecolor="#8a5b22", markersize=8.0, mew=1.8, zorder=9, label="target")
         self.tool_point, = self.ax.plot([], [], marker="o", color="#8a4f00", markersize=6.0, zorder=13, label="tool")
-        self.structure_line, = self.ax.plot([], [], color="#111111", linewidth=2.4, alpha=0.70, zorder=7, label="drone assembly")
+        self.structure_line, = self.ax.plot([], [], color="#111111", linewidth=2.4, alpha=0.45, zorder=7, label="integrated wall tool")
         self.tool_label = self.ax.text(0.0, 0.0, "tool", color="#8a4f00", fontsize=8, zorder=14)
         self.reference_label = self.ax.text(0.0, 0.0, "", color="#1f77b4", fontsize=8, zorder=14, visible=False)
         self.status_box = self.ax.text(
@@ -329,9 +327,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             zorder=20,
         )
 
-        self.payload_artist = PayloadArtist(self.ax, params, 8)
-        self.left_artist = ModuleArtist(self.ax, params.cage_radius, "#f7f7f7", "black", "", 0.16, 8)
-        self.right_artist = ModuleArtist(self.ax, params.cage_radius, "#f7f7f7", "black", "", 0.16, 8)
+        self.tool_artist = IntegratedToolArtist(self.ax, params, 8)
 
         self.left_arrow = FancyArrowPatch((0.0, 0.0), (0.0, 0.0), arrowstyle="-|>", mutation_scale=13, color="#1f77b4", zorder=12)
         self.right_arrow = FancyArrowPatch((0.0, 0.0), (0.0, 0.0), arrowstyle="-|>", mutation_scale=13, color="#1f77b4", zorder=12)
@@ -355,7 +351,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.tool_speed_curve = self.speed_plot.plot(pen=pg.mkPen("#2563a8", width=2), name="speed")
 
         actuation_tab = self._make_plot_tab("Actuation")
-        self.input_plot = self._make_plot(actuation_tab, "Drone Inputs", row=0, ylabel="N")
+        self.input_plot = self._make_plot(actuation_tab, "Motor Inputs", row=0, ylabel="N")
         self.left_input_curve = self.input_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="left thrust [N]")
         self.right_input_curve = self.input_plot.plot(pen=pg.mkPen("#bf3b32", width=2), name="right thrust [N]")
 
@@ -519,9 +515,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             [left_center[0], state.payload[0], right_center[0]],
             [left_center[1], state.payload[1], right_center[1]],
         )
-        self.payload_artist.update(state.payload, state.attitude)
-        self.left_artist.update(left_center, state.attitude)
-        self.right_artist.update(right_center, state.attitude)
+        self.tool_artist.update(state.payload, state.attitude, left_center, right_center)
         self.reference_point.set_data([], [])
         self.target_point.set_data([state.target[0]], [state.target[1]])
         self.tool_point.set_data([state.tool_head[0]], [state.tool_head[1]])

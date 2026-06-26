@@ -10,7 +10,7 @@ from tkinter import ttk
 from typing import Sequence
 
 from cable_hybrid_controller.controller import BEST_PLANNER, command_controller, default_scenario, make_simulator
-from wall_tool_sim.wall_tool_ui import SimState, Vec2, add2
+from wall_tool_sim.wall_tool_ui import SimState, Vec2, add2, integrated_motor_axes, oriented_box_polygon, scale2
 
 
 class TkWallToolApp:
@@ -81,7 +81,7 @@ class TkWallToolApp:
             ("Contact", "contact"),
             ("Cable Support", "support"),
             ("Speed", "speed"),
-            ("Drone Power", "power"),
+            ("Motor Power", "power"),
             ("Swing Energy", "energy"),
         )
         for index, (label, key) in enumerate(metric_specs):
@@ -239,10 +239,8 @@ class TkWallToolApp:
         left_xy = transform.world(left_center)
         payload_xy = transform.world(state.payload)
         right_xy = transform.world(right_center)
-        canvas.create_line(*left_xy, *payload_xy, *right_xy, fill="#111111", width=3)
-        self._draw_hex(canvas, left_xy, 17, state.attitude, fill="#f8faf8")
-        self._draw_hex(canvas, right_xy, 17, state.attitude, fill="#f8faf8")
-        self._draw_payload(canvas, payload_xy, state.attitude)
+        canvas.create_line(*left_xy, *payload_xy, *right_xy, fill="#111111", width=2)
+        self._draw_integrated_tool(canvas, transform, state, left_center, right_center)
 
         ref_xy = transform.world(state.reference)
         target_xy = transform.world(state.target)
@@ -250,13 +248,69 @@ class TkWallToolApp:
         canvas.create_oval(target_xy[0] - 8, target_xy[1] - 8, target_xy[0] + 8, target_xy[1] + 8, outline="#8a5b22", width=2)
 
         if self.show_forces:
-            left_axis, right_axis = self.sim._drone_axes(state.attitude)
+            left_axis, right_axis = integrated_motor_axes(params, state.attitude)
             self._draw_arrow(canvas, left_xy, left_axis, 18 + 26 * state.left_thrust / max(params.max_thrust_per_drone, 1e-9), "#2563a8")
             self._draw_arrow(canvas, right_xy, right_axis, 18 + 26 * state.right_thrust / max(params.max_thrust_per_drone, 1e-9), "#2563a8")
             cable_dir = (params.anchor[0] - state.payload[0], params.anchor[1] - state.payload[1])
             norm = math.hypot(cable_dir[0], cable_dir[1])
             if norm > 1e-9:
                 self._draw_arrow(canvas, payload_xy, (cable_dir[0] / norm, cable_dir[1] / norm), 36, "#6a3d9a")
+
+    def _draw_integrated_tool(
+        self,
+        canvas: tk.Canvas,
+        transform: "SceneTransform",
+        state: SimState,
+        left_center: Vec2,
+        right_center: Vec2,
+    ) -> None:
+        params = self.sim.params
+        body_half_length = max(
+            params.payload_half_length,
+            _distance2(state.payload, left_center) + 0.09,
+            _distance2(state.payload, right_center) + 0.09,
+        )
+        body_half_width = max(params.payload_hex_radius * 0.72, params.cage_radius * 0.33)
+        self._draw_world_polygon(
+            canvas,
+            transform,
+            oriented_box_polygon(state.payload, body_half_length, body_half_width, state.attitude),
+            fill="#f2cc60",
+            outline="#5c4512",
+            width=2,
+        )
+        left_axis, right_axis = integrated_motor_axes(params, state.attitude)
+        for center, axis in ((left_center, left_axis), (right_center, right_axis)):
+            angle = math.atan2(axis[1], axis[0])
+            self._draw_world_polygon(
+                canvas,
+                transform,
+                oriented_box_polygon(center, params.cage_radius * 0.42, params.cage_radius * 0.22, angle),
+                fill="#f8faf8",
+                outline="#111111",
+                width=2,
+            )
+            start = transform.world(center)
+            end = transform.world(add2(center, scale2(axis, params.cage_radius * 0.50)))
+            canvas.create_line(*start, *end, fill="#111111", width=2)
+        cable_tab = oriented_box_polygon(
+            add2(state.payload, self.sim._cable_mount_offset(state.attitude)),
+            params.payload_hex_radius * 0.28,
+            params.payload_hex_radius * 0.15,
+            state.attitude,
+        )
+        self._draw_world_polygon(canvas, transform, cable_tab, fill="#d8b247", outline="#5c4512", width=1)
+        tool_xy = transform.world(state.tool_head)
+        pad_radius = max(4.0, params.payload_hex_radius * 0.34 * transform.scale)
+        canvas.create_oval(
+            tool_xy[0] - pad_radius,
+            tool_xy[1] - pad_radius,
+            tool_xy[0] + pad_radius,
+            tool_xy[1] + pad_radius,
+            fill="#8a4f00",
+            outline="#4b2f05",
+            width=1,
+        )
 
     def _draw_polyline(
         self,
@@ -278,23 +332,21 @@ class TkWallToolApp:
         if len(coords) >= 4:
             canvas.create_line(*coords, fill=fill, width=width, dash=dash)
 
-    def _draw_hex(self, canvas: tk.Canvas, center: tuple[float, float], radius: float, angle: float, fill: str) -> None:
+    def _draw_world_polygon(
+        self,
+        canvas: tk.Canvas,
+        transform: "SceneTransform",
+        points: Sequence[Vec2],
+        *,
+        fill: str,
+        outline: str,
+        width: int,
+    ) -> None:
         coords: list[float] = []
-        for index in range(6):
-            a = math.pi / 6.0 + index * math.pi / 3.0 - angle
-            coords.extend((center[0] + radius * math.cos(a), center[1] + radius * math.sin(a)))
-        canvas.create_polygon(*coords, fill=fill, outline="#111111", width=2)
-
-    def _draw_payload(self, canvas: tk.Canvas, center: tuple[float, float], angle: float) -> None:
-        half_w = 25.0
-        half_h = 10.0
-        corners = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
-        coords: list[float] = []
-        for x, y in corners:
-            c = math.cos(-angle)
-            s = math.sin(-angle)
-            coords.extend((center[0] + c * x - s * y, center[1] + s * x + c * y))
-        canvas.create_polygon(*coords, fill="#f2cc60", outline="#5c4512", width=2)
+        for point in points:
+            x, y = transform.world(point)
+            coords.extend((x, y))
+        canvas.create_polygon(*coords, fill=fill, outline=outline, width=width)
 
     def _draw_arrow(
         self,
