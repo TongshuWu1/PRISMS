@@ -36,11 +36,15 @@ Useful variants:
 .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --no-control-ui --duration 2
 ```
 
-For the old kinematic comparison view:
-
-```powershell
-.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --plant-mode mirror
-```
+Batch runs print a loop realtime factor and fail if it drops below the default
+`--min-realtime-factor 0.5`. The default CoppeliaSim/controller step is 100 Hz
+(`--time-step 0.01`), while visual-only cable and propeller geometry refreshes
+at 10 Hz (`--cable-visual-update-period 0.1`,
+`--prop-visual-update-period 0.1`) so rendering does not throttle the plant.
+The controller's desired drawing path is visible directly on the CoppeliaSim
+wall by default (`--show-desired-path`) as blue path cylinders with start/end
+markers. The default path preview budget is 24 segments; increase
+`--desired-path-max-segments` only when you need more visual detail.
 
 The generator saves:
 
@@ -83,6 +87,7 @@ wall_tool_project\wall_tool_3d\scene\wall_tool_payload_model.ttm
 /wall_tool_cable_mount_post
 /wall_tool_cable_mount_hook
 /wall_tool_cable
+/wall_tool_cable_segment_##
 /pen_barrel
 /pen_nib
 /pen_tip
@@ -90,20 +95,35 @@ wall_tool_project\wall_tool_3d\scene\wall_tool_payload_model.ttm
 ```
 
 The dynamic run bridge stamps `/ink_dot_####` cylinders on the wall when the
-actual pen tip is near the wall and the controller is in work/contact mode.
+actual pen tip is near the wall and measured 3D contact force is inside the
+configured work band.
+The desired command path uses `/wall_tool_desired_path_segment_##` cylinders
+and `/wall_tool_desired_path_marker_##` endpoint disks, so planned path and
+actual ink are visually separate.
 
 ## Dynamic Plant
 
 The 3D plant currently includes:
 
 - cable reel velocity command changes paid-out cable length,
-- cable tension acts between `/anchor_reel_mount` and `/wall_tool_cable_mount`,
+- the reel is modeled as a 12 V encoder gearmotor velocity actuator: 43.8:1,
+  251 RPM no-load output speed, 18 kg.cm stall torque,
+- reel line velocity is clamped by spool radius and the gearmotor torque-speed envelope,
+- segmented steel-cable visualization shows tension-dependent sag,
+- cable tension comes only from measured stretch/stretch-rate, not a controller force floor,
+- cable mass contributes a configurable payload-carried weight term,
 - a visible top hook/eyelet makes the payload read as hanging from the cable,
 - the visible payload is a thicker rectangular rod-and-node cage in the same visual style as the truncated-octahedra drone cage,
 - side motor thrusts act at cylindrical motor frames along the same canted axes,
 - orange arrows visualize the live motor force vectors,
 - motor angular speed drives the propeller spin joints,
-- a wall-normal standoff guide holds the planar controller in the inspection plane.
+- a wall-normal guide and pen-tip contact model provide measured 3D wall contact.
+- physics/control and visual rendering are decoupled: cable tension is updated
+  every plant step, but the segmented cable cylinders are refreshed at the
+  configured visual cadence.
+- terminal and live UI telemetry report controller efficiency: tracking error,
+  thrust utilization, prop power index, reel mechanical work, saturation time,
+  NMPC solve timing, and peak motor/reel speeds.
 
 The next controller step is replacing the adapted 2D state sync with a native
 3D estimator/controller interface.

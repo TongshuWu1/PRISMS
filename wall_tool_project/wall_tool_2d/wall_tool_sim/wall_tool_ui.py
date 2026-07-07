@@ -38,12 +38,15 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from cable_hybrid_controller.mpc import MPCConfig, MPCReferenceHorizon, MPCSolution, WallToolNMPC
+from wall_tool_sim.reel_motor import ReelMotorSpec
+from wall_tool_sim.steel_cable import SteelCableSpec
 
 
 Vec2 = tuple[float, float]
 Vec3 = tuple[float, float, float]
 
 DEFAULT_GRAVITY = 9.80665
+DEFAULT_REEL_MOTOR = ReelMotorSpec()
 PLANNER_DIRECT = "direct"
 PLANNER_CENTER_SETUP = "center-setup"
 PLANNER_PREDICTIVE = "predictive"
@@ -340,17 +343,35 @@ class SimParams:
 
     # Cable and reel limits used by the active nearly-inextensible cable plant.
     max_cable_support_fraction: float = 1.0
-    max_spool_speed: float = 0.58
-    spool_accel_limit_mps2: float = 0.80
+    max_spool_speed: float = DEFAULT_REEL_MOTOR.max_line_speed_m_s
+    # Internal NMPC velocity-command slew bound, derived from reel motor response.
+    # The physical actuator command remains reel line velocity.
+    reel_velocity_slew_limit_mps2: float = (
+        DEFAULT_REEL_MOTOR.max_line_speed_m_s / DEFAULT_REEL_MOTOR.velocity_time_constant_s
+    )
+    reel_motor_voltage_v: float = DEFAULT_REEL_MOTOR.voltage_v
+    reel_motor_gear_ratio: float = DEFAULT_REEL_MOTOR.gear_ratio
+    reel_motor_no_load_rpm: float = DEFAULT_REEL_MOTOR.no_load_output_rpm
+    reel_motor_stall_torque_kg_cm: float = DEFAULT_REEL_MOTOR.stall_torque_kg_cm
+    reel_spool_radius_m: float = DEFAULT_REEL_MOTOR.spool_radius_m
+    reel_velocity_time_constant_s: float = DEFAULT_REEL_MOTOR.velocity_time_constant_s
+    reel_continuous_torque_fraction: float = DEFAULT_REEL_MOTOR.continuous_torque_fraction
     cable_taut_band: float = 0.006
     cable_stiffness_N_m: float = 750.0
     cable_damping_N_s_m: float = 1.2
-    max_spool_tension: float = 24.0
+    steel_cable_diameter_m: float = 0.0012
+    steel_cable_youngs_modulus_pa: float = 200.0e9
+    steel_cable_density_kg_m3: float = 7850.0
+    steel_cable_structural_compliance_m_N: float = 3.0e-4
+    steel_cable_damping_ratio: float = 0.22
+    steel_cable_payload_weight_fraction: float = 0.50
+    max_spool_tension: float = DEFAULT_REEL_MOTOR.continuous_line_force_N
     min_tracking_tension: float = 0.10
     reel_tension_kp_mps_N: float = 0.055
     reel_tension_ki_mps_Ns: float = 0.010
     reel_tension_integral_limit_Ns: float = 5.0
     load_cell_filter_tau_s: float = 0.018
+    cable_tension_rate_limit_N_s: float = 80.0
     min_cable_vertical_efficiency: float = 0.08
     min_control_cable_length: float = 0.62
 
@@ -1600,6 +1621,41 @@ class WallToolSimulator:
         )
         return clamp(support_limited_tension, 0.0, params.max_spool_tension)
 
+    def _steel_cable_spec(self) -> SteelCableSpec:
+        params = self.params
+        return SteelCableSpec(
+            diameter_m=params.steel_cable_diameter_m,
+            youngs_modulus_pa=params.steel_cable_youngs_modulus_pa,
+            density_kg_m3=params.steel_cable_density_kg_m3,
+            structural_compliance_m_N=params.steel_cable_structural_compliance_m_N,
+            damping_ratio=params.steel_cable_damping_ratio,
+            payload_weight_fraction=params.steel_cable_payload_weight_fraction,
+        )
+
+    def _reel_motor_spec(self) -> ReelMotorSpec:
+        params = self.params
+        return ReelMotorSpec(
+            voltage_v=params.reel_motor_voltage_v,
+            gear_ratio=params.reel_motor_gear_ratio,
+            no_load_output_rpm=params.reel_motor_no_load_rpm,
+            stall_torque_kg_cm=params.reel_motor_stall_torque_kg_cm,
+            spool_radius_m=params.reel_spool_radius_m,
+            velocity_time_constant_s=params.reel_velocity_time_constant_s,
+            continuous_torque_fraction=params.reel_continuous_torque_fraction,
+        )
+
+    def _steel_cable_stiffness(self, length_m: float) -> float:
+        return self._steel_cable_spec().axial_stiffness_N_m(length_m)
+
+    def _steel_cable_damping(self, length_m: float) -> float:
+        spec = self._steel_cable_spec()
+        effective_mass = self.params.total_mass + spec.mass_kg(length_m) / 3.0
+        return spec.damping_N_s_m(length_m, effective_mass)
+
+    def _payload_supported_cable_weight(self, length_m: float) -> float:
+        spec = self._steel_cable_spec()
+        return spec.payload_weight_fraction * spec.weight_N(length_m, self.params.gravity)
+
     def _in_contact_work_region(self, point: Vec2) -> bool:
         params = self.params
         margin = params.contact_work_margin_m
@@ -1721,7 +1777,8 @@ class WallToolSimulator:
             min_cable_length=params.min_cable_length,
             max_cable_length=params.max_cable_length,
             max_spool_speed=params.max_spool_speed,
-            spool_accel_limit_mps2=params.spool_accel_limit_mps2,
+            reel_velocity_slew_limit_mps2=params.reel_velocity_slew_limit_mps2,
+            cable_tension_rate_limit_N_s=params.cable_tension_rate_limit_N_s,
             attitude_limit_rad=params.mpc_attitude_limit_rad,
             slack_limit_m=params.mpc_slack_limit_m,
             tracking_position_weight=params.mpc_tracking_position_weight,
@@ -1820,13 +1877,18 @@ class WallToolSimulator:
             - params.reel_tension_kp_mps_N * tension_error
             - params.reel_tension_ki_mps_Ns * self.reel_tension_error_integral
         )
-        max_spool_delta = params.spool_accel_limit_mps2 * params.dt
-        spool_velocity_cmd = clamp(
+        reel_motor = self._reel_motor_spec()
+        spool_velocity_cmd = reel_motor.velocity_step(
+            self.last_spool_velocity_cmd,
             spool_velocity_request,
-            self.last_spool_velocity_cmd - max_spool_delta,
-            self.last_spool_velocity_cmd + max_spool_delta,
+            self.measured_tension,
+            params.dt,
         )
-        spool_velocity_cmd = clamp(spool_velocity_cmd, -params.max_spool_speed, params.max_spool_speed)
+        spool_velocity_cmd = clamp(
+            spool_velocity_cmd,
+            -min(params.max_spool_speed, reel_motor.max_line_speed_m_s),
+            min(params.max_spool_speed, reel_motor.max_line_speed_m_s),
+        )
 
         previous_cable_length = self.cable_length
         self.cable_length = clamp(
@@ -1847,9 +1909,11 @@ class WallToolSimulator:
         radial_mount_velocity = dot2(true_cable_out, true_mount_velocity)
         cable_extension = true_distance - self.cable_length
         cable_extension_rate = radial_mount_velocity - spool_velocity_cmd
+        cable_stiffness = self._steel_cable_stiffness(true_distance)
+        cable_damping = self._steel_cable_damping(true_distance)
         raw_tension = (
-            params.cable_stiffness_N_m * cable_extension
-            + params.cable_damping_N_s_m * cable_extension_rate
+            cable_stiffness * max(0.0, cable_extension)
+            + cable_damping * cable_extension_rate
         )
         actual_tension_limit = self._cable_support_tension_limit(true_cable_axis, params)
         self.cable_tension_saturated = raw_tension > actual_tension_limit
@@ -1870,10 +1934,18 @@ class WallToolSimulator:
         cable_torque = cross2(true_cable_arm, cable_force)
         left_torque = cross2(true_left_arm, left_force)
         right_torque = cross2(true_right_arm, right_force)
-        net_attitude_torque = cable_torque + left_torque + right_torque - params.rotational_damping * self.angular_velocity
+        cable_weight_force = (0.0, -self._payload_supported_cable_weight(true_distance))
+        cable_weight_torque = cross2(true_cable_arm, cable_weight_force)
+        net_attitude_torque = (
+            cable_torque
+            + left_torque
+            + right_torque
+            + cable_weight_torque
+            - params.rotational_damping * self.angular_velocity
+        )
         gravity_force = (0.0, -mass * params.gravity)
         wind_force = self._wind_force()
-        net_force = add2(add2(add2(drone_force, cable_force), gravity_force), wind_force)
+        net_force = add2(add2(add2(add2(drone_force, cable_force), gravity_force), wind_force), cable_weight_force)
         self.acceleration = scale2(net_force, 1.0 / mass)
         self.angular_acceleration = net_attitude_torque / max(params.assembly_inertia, 1e-9)
 

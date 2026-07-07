@@ -40,6 +40,6 @@ python drone_project\scripts\launchers\run_two_drone_position_ui.py
 Wall-tool controller:
 
 ```powershell
-python wall_tool_project\run_controller_ui.py
-python wall_tool_project\run_controller_logged_session.py
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_controller.py
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py
 ```

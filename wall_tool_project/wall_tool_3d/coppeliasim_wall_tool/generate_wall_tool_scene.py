@@ -24,6 +24,8 @@ for path in (PROJECT_ROOT, WALL_TOOL_2D_ROOT, WALL_TOOL_PROJECT_ROOT):
 
 from coppeliasim_wall_tool import sim_utils  # noqa: E402
 from cable_hybrid_controller.controller import best_params  # noqa: E402
+from wall_tool_sim.reel_motor import ReelMotorSpec  # noqa: E402
+from wall_tool_sim.steel_cable import SteelCableSpec  # noqa: E402
 from wall_tool_sim.wall_tool_ui import integrated_motor_center_offsets  # noqa: E402
 
 
@@ -32,6 +34,8 @@ MODEL_OUTPUT = PROJECT_ROOT / "scene" / "wall_tool_payload_model.ttm"
 
 PAYLOAD_ALIAS = "wall_tool_payload"
 CABLE_ALIAS = "wall_tool_cable"
+CABLE_SEGMENT_ALIAS_PREFIX = "wall_tool_cable_segment"
+CABLE_SEGMENT_COUNT = 18
 ANCHOR_ALIAS = "anchor_reel_mount"
 PEN_TIP_ALIAS = "pen_tip"
 TARGET_ALIAS = "inspection_target"
@@ -54,6 +58,8 @@ PEN_NIB_COLOR = [0.02, 0.02, 0.02]
 FORCE_ARROW_BASE_OFFSET = 0.075
 FORCE_ARROW_INITIAL_LENGTH = 0.095
 FORCE_ARROW_HEAD_LENGTH = 0.028
+DEFAULT_STEEL_CABLE = SteelCableSpec()
+DEFAULT_REEL_MOTOR = ReelMotorSpec()
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,11 +74,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wall-height", type=float, default=params.wall_height)
     parser.add_argument("--wall-thickness", type=float, default=0.050)
     parser.add_argument("--standoff", type=float, default=params.normal_standoff_m)
+    parser.add_argument("--reel-spool-radius", type=float, default=DEFAULT_REEL_MOTOR.spool_radius_m)
     parser.add_argument("--payload-x", type=float, default=params.initial_payload[0])
     parser.add_argument("--payload-z", type=float, default=params.initial_payload[1])
     parser.add_argument("--body-depth", type=float, default=0.140)
     parser.add_argument("--motor-depth", type=float, default=0.060)
-    parser.add_argument("--cable-radius", type=float, default=0.006)
+    parser.add_argument("--cable-radius", type=float, default=DEFAULT_STEEL_CABLE.radius_m)
+    parser.add_argument("--cable-segments", type=int, default=CABLE_SEGMENT_COUNT)
     parser.add_argument("--pen-radius", type=float, default=0.009)
     parser.add_argument("--save-model", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--clear-existing", action=argparse.BooleanOptionalAction, default=True)
@@ -139,6 +147,8 @@ def create_wall(sim, args: argparse.Namespace) -> None:
 
 
 def create_anchor_and_reel(sim, args: argparse.Namespace) -> int:
+    if float(args.reel_spool_radius) <= 0.0:
+        raise ValueError("--reel-spool-radius must be positive")
     anchor = [0.0, -args.standoff, args.wall_height]
     mount = sim_utils.create_shape(
         sim,
@@ -153,7 +163,7 @@ def create_anchor_and_reel(sim, args: argparse.Namespace) -> int:
     sim_utils.create_shape(
         sim,
         sim.primitiveshape_cylinder,
-        [0.150, 0.150, 0.105],
+        [2.0 * args.reel_spool_radius, 2.0 * args.reel_spool_radius, 0.045],
         "reel_spool",
         [0.0, -args.standoff, args.wall_height + 0.005],
         [0.20, 0.20, 0.20],
@@ -490,21 +500,38 @@ def create_payload(sim, args: argparse.Namespace) -> int:
 
 def create_cable(sim, args: argparse.Namespace) -> int:
     params = best_params()
+    if int(args.cable_segments) < 2:
+        raise ValueError("--cable-segments must be at least 2")
+    root = sim.createDummy(max(0.006, 2.0 * args.cable_radius))
+    sim.setObjectAlias(root, CABLE_ALIAS, 1)
     start = [0.0, -args.standoff, args.wall_height]
     end = [args.payload_x, -args.standoff, args.payload_z + params.payload_hex_radius]
-    length = math.dist(start, end)
-    cable = sim_utils.create_shape(
-        sim,
-        sim.primitiveshape_cylinder,
-        [args.cable_radius * 2.0, args.cable_radius * 2.0, max(1e-6, length)],
-        CABLE_ALIAS,
-        [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5, (start[2] + end[2]) * 0.5],
-        [0.02, 0.02, 0.02],
-        static=True,
-        respondable=False,
-    )
-    sim_utils.update_cylinder_between(sim, cable, start, end, length)
-    return cable
+    previous = start
+    for index in range(int(args.cable_segments)):
+        u0 = index / float(args.cable_segments)
+        u1 = (index + 1) / float(args.cable_segments)
+        segment_start = [start[axis] + u0 * (end[axis] - start[axis]) for axis in range(3)]
+        segment_end = [start[axis] + u1 * (end[axis] - start[axis]) for axis in range(3)]
+        length = max(1e-6, math.dist(segment_start, segment_end))
+        segment = sim_utils.create_shape(
+            sim,
+            sim.primitiveshape_cylinder,
+            [args.cable_radius * 2.0, args.cable_radius * 2.0, length],
+            f"{CABLE_SEGMENT_ALIAS_PREFIX}_{index:02d}",
+            [
+                (segment_start[0] + segment_end[0]) * 0.5,
+                (segment_start[1] + segment_end[1]) * 0.5,
+                (segment_start[2] + segment_end[2]) * 0.5,
+            ],
+            [0.02, 0.02, 0.02],
+            static=True,
+            respondable=False,
+        )
+        sim_utils.update_cylinder_between(sim, segment, segment_start, segment_end, length)
+        previous = segment_end
+    if math.dist(previous, end) > 1e-9:
+        raise RuntimeError("steel cable segment generation failed to reach the payload mount")
+    return int(root)
 
 
 def build_scene(sim, args: argparse.Namespace) -> dict[str, int]:

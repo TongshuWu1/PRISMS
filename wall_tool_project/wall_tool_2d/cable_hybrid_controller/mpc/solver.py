@@ -263,14 +263,21 @@ class WallToolNMPC:
     def _add_reel_rate_constraints(self, k: int) -> None:
         cfg = self.config
         if k == 0:
-            max_delta = cfg.spool_accel_limit_mps2 * cfg.control_period_s
+            interval = cfg.control_period_s
             previous_speed = self.u_prev_param[self.SPOOL_SPEED]
+            previous_tension = self.u_prev_param[self.CABLE_TENSION]
         else:
-            max_delta = cfg.spool_accel_limit_mps2 * cfg.horizon_dt
+            interval = cfg.horizon_dt
             previous_speed = self.u_var[self.SPOOL_SPEED, k - 1]
+            previous_tension = self.u_var[self.CABLE_TENSION, k - 1]
+        max_delta = cfg.reel_velocity_slew_limit_mps2 * interval
         delta = self.u_var[self.SPOOL_SPEED, k] - previous_speed
         self.opti.subject_to(delta <= max_delta)
         self.opti.subject_to(delta >= -max_delta)
+        max_tension_delta = max(0.0, cfg.cable_tension_rate_limit_N_s) * interval
+        tension_delta = self.u_var[self.CABLE_TENSION, k] - previous_tension
+        self.opti.subject_to(tension_delta <= max_tension_delta)
+        self.opti.subject_to(tension_delta >= -max_tension_delta)
 
     def _rk4_step(self, state, control):
         dt = self.config.horizon_dt

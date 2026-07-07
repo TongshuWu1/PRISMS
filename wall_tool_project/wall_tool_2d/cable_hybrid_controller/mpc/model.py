@@ -35,7 +35,8 @@ class MPCConfig:
     min_cable_length: float
     max_cable_length: float
     max_spool_speed: float
-    spool_accel_limit_mps2: float
+    reel_velocity_slew_limit_mps2: float
+    cable_tension_rate_limit_N_s: float
     attitude_limit_rad: float
     slack_limit_m: float
     tracking_position_weight: float

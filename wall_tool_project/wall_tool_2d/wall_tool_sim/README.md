@@ -38,10 +38,11 @@ From the PRISMS workspace root, prefix the path with `wall_tool_project\`.
 - Each side motor can generate up to 150 gf, modeled as `0.150 * g = 1.47 N` of aggregate thrust along its tilted thrust axis.
 - The cable attaches to the top of the integrated payload body, so cable force can create torque about the tool center.
 - The spool state is paid-out cable length, not tool position.
-- The spool actuator commands cable velocity and has a maximum reel speed.
+- The spool actuator commands cable velocity through a 12 V encoder gearmotor
+  model: 43.8:1 gearbox, 251 RPM no-load output speed, and 18 kg.cm stall torque.
 - The active `tool_head_nmpc` controller uses an inextensible unilateral steel-cable branch: cable length is constrained against anchor-to-mount distance, tension is selected by the NMPC only when taut, and vertical cable support is capped at 100% of suspended weight.
 - The controller state estimate comes from the simulated sensor channels: cable angle/rate, spool encoder length/velocity, cable tension, and IMU tilt/rate.
-- The active NMPC path samples the desired path over a finite horizon; there is no speed-scaling supervisor or fallback controller.
+- The active NMPC path samples the desired path over a finite horizon; there is no speed-scaling supervisor or alternate controller branch.
 - References are kept away from the near-anchor singular region where a tiny cable length would make the wall-plane model physically unrealistic.
 - The active NMPC controller optimizes payload position/velocity, tilt/rate, paid-out cable length, left/right motor thrust, cable tension, and reel velocity directly.
 - The spool and cable are optimized together with side-motor thrust; there is no separate radial policy or tangential pendulum controller.

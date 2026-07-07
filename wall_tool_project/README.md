@@ -54,8 +54,10 @@ wall_tool_2d/cable_hybrid_controller/config.py
 The 3D runner launches CoppeliaSim if it is not already listening, regenerates
 the scene, starts the simulation, and runs the wall tool as a dynamic
 CoppeliaSim plant. The payload is a single integrated body, the two side motors
-apply thrust at the same canted axes as the 2D model, the reel enforces a taut
-non-elastic cable approximation, and the propeller joints spin from motor RPM.
+apply thrust at the same canted axes as the 2D model, the reel is a 12 V
+encoder gearmotor velocity actuator, and the cable is a segmented steel-cable assembly with density,
+axial stiffness, damping, payload-carried cable weight, and visual sag. The
+propeller joints spin from motor RPM.
 It also opens the native 2D wall-tool UI as a controller/spectator: click the
 wall, use append mode, or draw a path in the 2D UI, and the live 3D
 CoppeliaSim payload follows while tension, pen error, motor RPM, and trace
@@ -74,6 +76,14 @@ For a batch smoke test without the controller board:
 .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --no-control-ui --duration 2
 ```
 
+The 3D batch runner reports realtime factor and fails below
+`--min-realtime-factor 0.5` by default. The interactive CoppeliaSim bridge uses
+100 Hz plant/controller stepping and refreshes visual-only cable/prop geometry
+at 10 Hz so the segmented steel cable does not dominate the remote API loop.
+The desired drawing path is rendered in CoppeliaSim by default as a blue path
+with endpoint markers, while measured wall contact still creates separate ink
+dots. The same run reports controller/actuator efficiency metrics at shutdown.
+
 If CoppeliaSim is installed somewhere else:
 
 ```powershell
@@ -87,17 +97,10 @@ wall_tool_3d/scene/wall_tool_pen_scene.ttt
 wall_tool_3d/scene/wall_tool_payload_model.ttm
 ```
 
-Use the old visual playback mode for comparison:
-
-```powershell
-.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --plant-mode mirror
-```
-
-The dynamic mode still reuses the 2D NMPC as the command source, but it syncs
+The dynamic mode reuses the 2D NMPC as the command source, but it syncs
 position, velocity, pitch, reel length, and tension from the CoppeliaSim body
-before each solve. The next engineering step is a controller pass that treats
-the CoppeliaSim plant as the primary estimator/plant instead of adapting the
-2D simulator state.
+before each solve. The bridge also uses measured 3D wall-contact force for
+ink/contact validity.
 
 ## Active Model
 

@@ -125,8 +125,8 @@ Important values:
   mpc_solver_max_iter = 80
   mpc_solver_tolerance = 1e-5
   max_cable_support_fraction = 1.0
-  max_spool_speed = 0.58
-  spool_accel_limit_mps2 = 0.80
+  max_spool_speed = derived from 251 RPM output speed and 22 mm spool radius
+  reel_velocity_slew_limit_mps2 = internal velocity-command slew derived from the 12 V reel gearmotor response
   rotational_damping = 0.090
 
 UI

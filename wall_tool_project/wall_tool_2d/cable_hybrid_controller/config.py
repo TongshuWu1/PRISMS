@@ -6,8 +6,14 @@ below are merged into `SimParams` by `controller.py`.
 
 from __future__ import annotations
 
+from wall_tool_sim.reel_motor import ReelMotorSpec
 from wall_tool_sim.wall_tool_ui import PLANNER_DIRECT
+from wall_tool_sim.steel_cable import SteelCableSpec
 
+
+NOMINAL_CABLE_LENGTH_M = 4.0
+STEEL_CABLE = SteelCableSpec()
+REEL_MOTOR = ReelMotorSpec()
 
 # Mission and UI/run behavior.
 BEST_PLANNER = PLANNER_DIRECT
@@ -38,7 +44,7 @@ FACADE_MISSION_OVERRIDES = {
 
 
 # Desired path generation.
-BEST_PATH_SPEED = 0.3
+BEST_PATH_SPEED = 0.24
 COVERAGE_CORNER_SPEED = 0.040
 REFERENCE_CONFIG = {
     "path_speed": BEST_PATH_SPEED,
@@ -57,9 +63,9 @@ ACTIVE_CONTROLLER = {
 # NMPC horizon and solver.
 MPC_SOLVER_CONFIG = {
     "mpc_horizon_steps": 15,
-    "mpc_horizon_dt": 0.200,
-    "mpc_control_period_s": 0.080,
-    "mpc_solver_max_iter": 40,
+    "mpc_horizon_dt": 0.140,
+    "mpc_control_period_s": 0.060,
+    "mpc_solver_max_iter": 55,
     "mpc_solver_tolerance": 1e-5,
     "mpc_energy_plot_limit_J": 0.015,
 }
@@ -92,13 +98,27 @@ MPC_OBJECTIVE_WEIGHTS = {
 
 # Reel and cable limits used by the active NMPC plant branch and diagnostics.
 CABLE_REEL_CONFIG = {
-    "max_spool_speed": 0.58,
-    "spool_accel_limit_mps2": 0.80,
+    "max_spool_speed": REEL_MOTOR.max_line_speed_m_s,
+    "reel_velocity_slew_limit_mps2": REEL_MOTOR.max_line_speed_m_s / REEL_MOTOR.velocity_time_constant_s,
     "min_tracking_tension": 0.10,
-    "max_spool_tension": 24.0,
-    "cable_taut_band": 0.006,
-    "cable_stiffness_N_m": 750.0,
-    "cable_damping_N_s_m": 1.20,
+    "max_spool_tension": REEL_MOTOR.continuous_line_force_N,
+    "reel_motor_voltage_v": REEL_MOTOR.voltage_v,
+    "reel_motor_gear_ratio": REEL_MOTOR.gear_ratio,
+    "reel_motor_no_load_rpm": REEL_MOTOR.no_load_output_rpm,
+    "reel_motor_stall_torque_kg_cm": REEL_MOTOR.stall_torque_kg_cm,
+    "reel_spool_radius_m": REEL_MOTOR.spool_radius_m,
+    "reel_velocity_time_constant_s": REEL_MOTOR.velocity_time_constant_s,
+    "reel_continuous_torque_fraction": REEL_MOTOR.continuous_torque_fraction,
+    "cable_taut_band": 0.002,
+    "cable_stiffness_N_m": STEEL_CABLE.axial_stiffness_N_m(NOMINAL_CABLE_LENGTH_M),
+    "cable_damping_N_s_m": STEEL_CABLE.damping_N_s_m(NOMINAL_CABLE_LENGTH_M, 0.18),
+    "steel_cable_diameter_m": STEEL_CABLE.diameter_m,
+    "steel_cable_youngs_modulus_pa": STEEL_CABLE.youngs_modulus_pa,
+    "steel_cable_density_kg_m3": STEEL_CABLE.density_kg_m3,
+    "steel_cable_structural_compliance_m_N": STEEL_CABLE.structural_compliance_m_N,
+    "steel_cable_damping_ratio": STEEL_CABLE.damping_ratio,
+    "steel_cable_payload_weight_fraction": STEEL_CABLE.payload_weight_fraction,
+    "cable_tension_rate_limit_N_s": 80.0,
     "reel_tension_kp_mps_N": 0.055,
     "reel_tension_ki_mps_Ns": 0.010,
     "reel_tension_integral_limit_Ns": 5.0,

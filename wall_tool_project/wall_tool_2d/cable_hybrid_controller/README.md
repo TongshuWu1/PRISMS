@@ -12,7 +12,7 @@ The chosen architecture is:
 - prediction of payload position, velocity, tilt, angular rate, and paid-out
   cable length over the horizon,
 - hard constraints for wall bounds, actuator limits, cable tension/support
-  limits, taut cable geometry, attitude limits, and reel speed/acceleration,
+  limits, taut cable geometry, attitude limits, and reel velocity command slew,
 - tool-head tracking is the primary objective; drone power, reel motion, input
   rate, slack, and unnecessary tilt are secondary costs,
 - cable support is cheap but bounded, so the optimizer uses cable strength when

@@ -329,7 +329,7 @@ def summarize_session(
             "reference_min_segment_duration_s": params.reference_min_segment_duration_s,
             "coverage_corner_speed_m_s": COVERAGE_CORNER_SPEED,
             "max_spool_speed_m_s": params.max_spool_speed,
-            "spool_accel_limit_mps2": params.spool_accel_limit_mps2,
+            "reel_velocity_slew_limit_mps2": params.reel_velocity_slew_limit_mps2,
             "max_thrust_per_drone_N": params.max_thrust_per_drone,
             "max_tangential_accel": params.max_tangential_accel,
             "max_cable_support_fraction": params.max_cable_support_fraction,
@@ -862,8 +862,8 @@ def plot_limit_margins(
     spool_velocity = _values(rows, "spool_velocity_cmd_m_s")
     dt = (t[1] - t[0]) if len(t) > 1 else 1.0
     spool_accel = [0.0] + [abs((spool_velocity[index] - spool_velocity[index - 1]) / max(dt, 1e-9)) for index in range(1, len(rows))]
-    spool_accel_limit = params.spool_accel_limit_mps2 if params else max(spool_accel + [1.0])
-    spool_accel_ratio = [value / max(spool_accel_limit, 1e-9) for value in spool_accel]
+    reel_velocity_slew_limit = params.reel_velocity_slew_limit_mps2 if params else max(spool_accel + [1.0])
+    spool_accel_ratio = [value / max(reel_velocity_slew_limit, 1e-9) for value in spool_accel]
 
     fig, axes = plt.subplots(5, 1, figsize=(12.0, 13.0), sharex=True, constrained_layout=True)
     axes[0].plot(t, _values(rows, "tracking_error_ratio"), label="tracking")
@@ -897,7 +897,7 @@ def plot_limit_margins(
     axes[3].legend(fontsize=8)
 
     axes[4].plot(t, spool_velocity, label="spool velocity")
-    axes[4].plot(t, spool_accel_ratio, label="spool accel / limit")
+    axes[4].plot(t, spool_accel_ratio, label="reel velocity slew / limit")
     axes[4].axhline(1.0, color="#d95f0e", linestyle="--")
     axes[4].set_ylabel("m/s / ratio")
     axes[4].set_xlabel("time [s]")
@@ -926,8 +926,8 @@ def plot_smoothness(rows: Sequence[dict[str, float | int]], output_dir: Path, pa
         abs((spool_velocity[index] - spool_velocity[index - 1]) / max(dt, 1e-9))
         for index in range(1, len(rows))
     ]
-    spool_accel_limit = params.spool_accel_limit_mps2 if params else max(spool_accel + [1.0])
-    spool_accel_ratio = [value / max(spool_accel_limit, 1e-9) for value in spool_accel]
+    reel_velocity_slew_limit = params.reel_velocity_slew_limit_mps2 if params else max(spool_accel + [1.0])
+    spool_accel_ratio = [value / max(reel_velocity_slew_limit, 1e-9) for value in spool_accel]
 
     fig, axes = plt.subplots(5, 1, figsize=(12.0, 13.0), sharex=True, constrained_layout=True)
     axes[0].plot(t, _values(rows, "payload_speed_m_s"), label="payload speed")
@@ -956,7 +956,7 @@ def plot_smoothness(rows: Sequence[dict[str, float | int]], output_dir: Path, pa
     axes[3].legend(fontsize=8)
 
     axes[4].plot(t, spool_velocity, label="spool velocity")
-    axes[4].plot(t, spool_accel_ratio, label="spool accel / limit")
+    axes[4].plot(t, spool_accel_ratio, label="reel velocity slew / limit")
     axes[4].axhline(1.0, color="#d95f0e", linestyle="--", linewidth=1.0)
     axes[4].set_ylabel("m/s / ratio")
     axes[4].set_xlabel("time [s]")
