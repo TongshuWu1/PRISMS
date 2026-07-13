@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Interactive 2.5D PRISMS wall-tool simulator.
+"""Interactive wall-plane PRISMS facade-inspection simulator.
 
 The model is intentionally small, but it is not just a drawing. The suspended
 system is integrated as a Cartesian point mass under gravity, finite cable
-tension, and two bounded tilted side-motor thrust axes. The controller is a
-nonlinear MPC with an inextensible unilateral cable model.
-Facade work adds a separate normal-to-wall gap/contact state.
+tension, and two propellers independently rotated by 270-degree position
+servos. The controller is a nonlinear MPC with compliant unilateral cable,
+reel, motor, and second-order tilt-servo dynamics. Normal contact is
+deliberately outside the inspection scope.
 Click any point on the wall to command a smooth straight-line move, or enable
 append mode to queue a smooth multi-waypoint trajectory.
 """
@@ -13,8 +14,10 @@ append mode to queue a smooth multi-waypoint trajectory.
 from __future__ import annotations
 
 import argparse
+import bisect
 import itertools
 import math
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -38,6 +41,7 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 from cable_hybrid_controller.mpc import MPCConfig, MPCReferenceHorizon, MPCSolution, WallToolNMPC
+from wall_tool_sim.gimbal_servo import GimbalServoSpec
 from wall_tool_sim.reel_motor import ReelMotorSpec
 from wall_tool_sim.steel_cable import SteelCableSpec
 
@@ -47,6 +51,7 @@ Vec3 = tuple[float, float, float]
 
 DEFAULT_GRAVITY = 9.80665
 DEFAULT_REEL_MOTOR = ReelMotorSpec()
+DEFAULT_GIMBAL_SERVO = GimbalServoSpec()
 PLANNER_DIRECT = "direct"
 PLANNER_CENTER_SETUP = "center-setup"
 PLANNER_PREDICTIVE = "predictive"
@@ -60,6 +65,17 @@ DRONE_LEFT_HEX = (-1, -1, -1)
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def slew_toward(value: float, target: float, max_rate: float, dt: float) -> float:
+    """Advance a command toward its target without exceeding a physical rate."""
+
+    if not all(math.isfinite(item) for item in (value, target, max_rate, dt)):
+        raise ValueError("command slew inputs must be finite")
+    if max_rate <= 0.0 or dt <= 0.0:
+        raise ValueError("command slew rate and time step must be positive")
+    maximum_step = max_rate * dt
+    return value + clamp(target - value, -maximum_step, maximum_step)
 
 
 def dot2(a: Sequence[float], b: Sequence[float]) -> float:
@@ -295,11 +311,26 @@ def integrated_motor_centers(params: "SimParams", payload: Vec2, attitude: float
     return add2(payload, left_offset), add2(payload, right_offset)
 
 
-def integrated_motor_axes(params: "SimParams", attitude: float) -> tuple[Vec2, Vec2]:
+def integrated_motor_axes(
+    params: "SimParams",
+    attitude: float,
+    left_gimbal_angle: float,
+    right_gimbal_angle: float,
+) -> tuple[Vec2, Vec2]:
+    """Return world-frame thrust axes for wall-normal gimbal hinges.
+
+    A local gimbal angle of zero points along payload +z. Positive angle
+    produces +x thrust. The body attitude is included because each gimbal is
+    mounted to the payload rather than inertially stabilized.
+    """
+
     attitude_error = attitude - params.nominal_attitude_rad
-    left_axis = rotate2((math.sin(params.hex_face_tilt_rad), math.cos(params.hex_face_tilt_rad)), attitude_error)
-    right_axis = rotate2((-math.sin(params.hex_face_tilt_rad), math.cos(params.hex_face_tilt_rad)), attitude_error)
-    return left_axis, right_axis
+    left_world_angle = attitude_error + float(left_gimbal_angle)
+    right_world_angle = attitude_error + float(right_gimbal_angle)
+    return (
+        (math.sin(left_world_angle), math.cos(left_world_angle)),
+        (math.sin(right_world_angle), math.cos(right_world_angle)),
+    )
 
 
 @dataclass(frozen=True)
@@ -314,15 +345,48 @@ class SimParams:
     payload_half_length: float = 0.190
     payload_hex_radius: float = 0.114
     module_gap: float = 0.0
+    # A passive Y-bridle supplies finite restoring stiffness and damping. An
+    # ideal pitch constraint remains available only for isolated plant tests.
+    payload_pitch_constrained: bool = False
+    passive_attitude_stiffness_Nm_rad: float = 0.20
+    passive_attitude_damping_Nm_s_rad: float = 0.055
     max_thrust_per_drone: float = 0.150 * DEFAULT_GRAVITY
+    mpc_thrust_command_fraction: float = 0.92
 
-    # The runtime controller is nonlinear MPC only. This name is kept for
-    # reports and logs so runs state the selected controller explicitly.
-    control_law: str = "tool_head_nmpc"
+    # Independent 270-degree propeller tilt servos; axes are normal to the wall.
+    gimbal_max_angle_rad: float = DEFAULT_GIMBAL_SERVO.max_angle_rad
+    gimbal_max_rate_rad_s: float = DEFAULT_GIMBAL_SERVO.max_rate_rad_s
+    gimbal_max_acceleration_rad_s2: float = DEFAULT_GIMBAL_SERVO.max_acceleration_rad_s2
+    gimbal_command_slew_limit_rad_s: float = math.radians(90.0)
+    gimbal_natural_frequency_rad_s: float = DEFAULT_GIMBAL_SERVO.natural_frequency_rad_s
+    gimbal_damping_ratio: float = DEFAULT_GIMBAL_SERVO.damping_ratio
+    gimbal_command_min_pulse_us: float = DEFAULT_GIMBAL_SERVO.command_min_pulse_us
+    gimbal_command_max_pulse_us: float = DEFAULT_GIMBAL_SERVO.command_max_pulse_us
+    gimbal_command_resolution_us: float = DEFAULT_GIMBAL_SERVO.command_resolution_us
+    gimbal_left_zero_error_rad: float = math.radians(0.35)
+    gimbal_right_zero_error_rad: float = math.radians(-0.25)
+
+    # The default hardware-facing controller is a cascaded sensor controller.
+    # The experimental NMPC remains selectable for offline comparison.
+    control_law: str = "vector_thrust_nmpc"
+
+    # Outer-loop position feedback and bounded force allocation. Attitude
+    # feedback is retained for the optional free-pitch model.
+    cascade_position_kp: float = 2.5
+    cascade_velocity_kd: float = 3.2
+    cascade_acceleration_limit_m_s2: float = 0.8
+    cascade_attitude_kp: float = 12.0
+    cascade_attitude_kd: float = 4.0
+    cascade_torque_weight: float = 1.0
+    cascade_nominal_tension_N: float = 0.45
+    cascade_min_tension_N: float = 0.35
+    cascade_max_tension_N: float = 1.20
+    cascade_tension_regularization: float = 0.002
+    max_control_spool_speed: float = 0.10
 
     # NMPC horizon, solver, constraints, and objective weights.
     mpc_horizon_steps: int = 18
-    mpc_horizon_dt: float = 0.080
+    mpc_horizon_dt: float = 0.060
     mpc_control_period_s: float = 0.040
     mpc_attitude_limit_rad: float = 1.05
     mpc_slack_limit_m: float = 0.012
@@ -336,13 +400,19 @@ class SimParams:
     mpc_input_rate_weight: float = 0.030
     mpc_attitude_rate_weight: float = 0.45
     mpc_attitude_weight: float = 0.025
+    mpc_gimbal_angle_weight: float = 0.018
+    mpc_gimbal_rate_weight: float = 0.080
+    mpc_cable_support_weight: float = 10.0
     mpc_slack_weight: float = 180.0
+    mpc_hold_integral_gain_s_inv: float = 0.8
+    mpc_hold_integral_limit_m_s: float = 0.060
     mpc_solver_max_iter: int = 90
     mpc_solver_tolerance: float = 1e-5
     mpc_energy_plot_limit_J: float = 0.015
 
-    # Cable and reel limits used by the active nearly-inextensible cable plant.
+    # Cable and reel limits used by the active compliant unilateral cable plant.
     max_cable_support_fraction: float = 1.0
+    desired_cable_support_fraction: float = 0.75
     max_spool_speed: float = DEFAULT_REEL_MOTOR.max_line_speed_m_s
     # Internal NMPC velocity-command slew bound, derived from reel motor response.
     # The physical actuator command remains reel line velocity.
@@ -355,10 +425,13 @@ class SimParams:
     reel_motor_stall_torque_kg_cm: float = DEFAULT_REEL_MOTOR.stall_torque_kg_cm
     reel_spool_radius_m: float = DEFAULT_REEL_MOTOR.spool_radius_m
     reel_velocity_time_constant_s: float = DEFAULT_REEL_MOTOR.velocity_time_constant_s
+    motor_thrust_time_constant_s: float = 0.060
+    thrust_command_slew_limit_N_s: float = 2.0
     reel_continuous_torque_fraction: float = DEFAULT_REEL_MOTOR.continuous_torque_fraction
     cable_taut_band: float = 0.006
     cable_stiffness_N_m: float = 750.0
     cable_damping_N_s_m: float = 1.2
+    cable_tension_time_constant_s: float = 0.030
     steel_cable_diameter_m: float = 0.0012
     steel_cable_youngs_modulus_pa: float = 200.0e9
     steel_cable_density_kg_m3: float = 7850.0
@@ -372,8 +445,22 @@ class SimParams:
     reel_tension_integral_limit_Ns: float = 5.0
     load_cell_filter_tau_s: float = 0.018
     cable_tension_rate_limit_N_s: float = 80.0
+    max_cable_extension_m: float = 0.009
     min_cable_vertical_efficiency: float = 0.08
     min_control_cable_length: float = 0.62
+
+    # Explicit sensor sample rates, quantization, and noise. Ground-truth
+    # payload position/velocity is never passed to the internal controller.
+    sensor_random_seed: int = 2804
+    sensor_sample_period_s: float = 0.010
+    cable_angle_encoder_counts_per_rev: int = 16384
+    reel_encoder_counts_per_rev: int = 4096
+    cable_angle_noise_std_rad: float = 0.00035
+    reel_length_noise_std_m: float = 0.00005
+    load_cell_noise_std_N: float = 0.008
+    imu_angle_noise_std_rad: float = 0.0025
+    imu_rate_noise_std_rad_s: float = 0.010
+    velocity_estimator_time_constant_s: float = 0.045
 
     # Planner cost scales. These are route-selection terms, not a controller.
     max_tangential_accel: float = 2.8
@@ -387,6 +474,9 @@ class SimParams:
     reference_accel_limit_mps2: float = 0.24
     reference_jerk_limit_mps3: float = 1.2
     reference_min_segment_duration_s: float = 0.90
+    reference_preview_time_s: float = 1.2
+    reference_preview_min_distance_m: float = 0.18
+    reference_turn_lateral_accel_m_s2: float = 0.06
     waypoint_tolerance: float = 0.012
 
     # Geometry and disturbances.
@@ -428,9 +518,61 @@ class SimParams:
     work_contact_speed_limit_mps: float = 0.36
     work_contact_tracking_limit_m: float = 0.12
     work_contact_angular_rate_limit_rad_s: float = 1.5
+    inspection_attitude_limit_rad: float = math.radians(8.0)
     normal_wind_force_N: float = 0.0
     normal_wind_gust_force_N: float = 0.0
     normal_wind_gust_period_s: float = 9.5
+
+    def __post_init__(self) -> None:
+        if self.control_law != "vector_thrust_nmpc":
+            raise ValueError(
+                "wall_tool_2d requires control_law='vector_thrust_nmpc'; "
+                "no backup controller is configured"
+            )
+        positive_fields = {
+            "physics dt": self.dt,
+            "total mass": self.total_mass,
+            "gravity": self.gravity,
+            "maximum thrust": self.max_thrust_per_drone,
+            "gimbal maximum angle": self.gimbal_max_angle_rad,
+            "gimbal maximum rate": self.gimbal_max_rate_rad_s,
+            "gimbal maximum acceleration": self.gimbal_max_acceleration_rad_s2,
+            "gimbal command slew limit": self.gimbal_command_slew_limit_rad_s,
+            "gimbal natural frequency": self.gimbal_natural_frequency_rad_s,
+            "gimbal damping ratio": self.gimbal_damping_ratio,
+            "thrust command slew limit": self.thrust_command_slew_limit_N_s,
+            "hold integral gain": self.mpc_hold_integral_gain_s_inv,
+            "hold integral limit": self.mpc_hold_integral_limit_m_s,
+            "sensor sample period": self.sensor_sample_period_s,
+            "velocity estimator time constant": self.velocity_estimator_time_constant_s,
+            "minimum tracking tension": self.min_tracking_tension,
+            "maximum spool tension": self.max_spool_tension,
+        }
+        for name, value in positive_fields.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.sensor_sample_period_s < self.dt:
+            raise ValueError("sensor sample period cannot be shorter than the physics step")
+        if self.cable_angle_encoder_counts_per_rev < 4:
+            raise ValueError("cable-angle encoder resolution is invalid")
+        if self.reel_encoder_counts_per_rev < 4:
+            raise ValueError("reel encoder resolution is invalid")
+        if self.gimbal_command_max_pulse_us <= self.gimbal_command_min_pulse_us:
+            raise ValueError("tilt-servo command pulse range is invalid")
+        if self.gimbal_command_resolution_us <= 0.0:
+            raise ValueError("tilt-servo command pulse resolution is invalid")
+        if not math.isfinite(self.gimbal_left_zero_error_rad):
+            raise ValueError("left tilt-servo zero error must be finite")
+        if not math.isfinite(self.gimbal_right_zero_error_rad):
+            raise ValueError("right tilt-servo zero error must be finite")
+        if not 0.0 < self.desired_cable_support_fraction <= self.max_cable_support_fraction <= 1.0:
+            raise ValueError(
+                "cable support fractions must satisfy 0 < desired <= maximum <= 1"
+            )
+        if self.normal_contact_enabled or self.contact_work_enabled:
+            raise ValueError(
+                "the inspection controller does not model or command wall-normal contact force"
+            )
 
     @property
     def anchor(self) -> Vec2:
@@ -665,6 +807,7 @@ class SimState:
     contact_force: float
     desired_contact_force: float
     contact_valid: bool
+    inspection_valid: bool
     work_mode: bool
     desired_attitude_torque: float
     attitude_torque: float
@@ -673,6 +816,16 @@ class SimState:
     right_torque: float
     left_thrust: float
     right_thrust: float
+    left_gimbal_angle: float
+    right_gimbal_angle: float
+    left_gimbal_rate: float
+    right_gimbal_rate: float
+    left_gimbal_angle_command: float
+    right_gimbal_angle_command: float
+    estimated_left_gimbal_angle: float
+    estimated_right_gimbal_angle: float
+    estimated_left_gimbal_rate: float
+    estimated_right_gimbal_rate: float
     tension: float
     tangential_force: float
     desired_tangential_force: float
@@ -693,6 +846,8 @@ class SimState:
     clf_projected_accel_m_s2: float
     mpc_predicted_path: tuple[Vec2, ...] = ()
     mpc_predicted_attitudes: tuple[float, ...] = ()
+    mpc_predicted_left_gimbal_angles: tuple[float, ...] = ()
+    mpc_predicted_right_gimbal_angles: tuple[float, ...] = ()
     mpc_predicted_tensions: tuple[float, ...] = ()
     mpc_predicted_spool_speeds: tuple[float, ...] = ()
     mpc_status: str = ""
@@ -935,12 +1090,18 @@ class ReferenceTrajectory:
         accel_limit: float = math.inf,
         jerk_limit: float = math.inf,
         min_segment_duration: float = 0.45,
+        preview_time_s: float = 1.0,
+        preview_min_distance_m: float = 0.10,
+        turn_lateral_accel_m_s2: float = 0.10,
     ) -> None:
         self.speed = speed
         self.tolerance = tolerance
         self.accel_limit = accel_limit
         self.jerk_limit = jerk_limit
         self.min_segment_duration = min_segment_duration
+        self.preview_time_s = max(0.05, preview_time_s)
+        self.preview_min_distance_m = max(0.0, preview_min_distance_m)
+        self.turn_lateral_accel_m_s2 = max(1e-4, turn_lateral_accel_m_s2)
         self.position = initial_position
         self.velocity: Vec2 = (0.0, 0.0)
         self.acceleration: Vec2 = (0.0, 0.0)
@@ -949,11 +1110,13 @@ class ReferenceTrajectory:
         self.segment_time = 0.0
         self.geometric_progress_m = 0.0
         self._path_sample_cache: list[Vec2] | None = None
+        self._path_cumulative_cache: list[float] | None = None
         self.final_target = initial_position
         self.mode = "hold"
 
     def _invalidate_path_cache(self) -> None:
         self._path_sample_cache = None
+        self._path_cumulative_cache = None
 
     def reset(self, position: Vec2) -> None:
         self.position = position
@@ -1123,13 +1286,20 @@ class ReferenceTrajectory:
             self.acceleration = (0.0, 0.0)
             return self.state()
 
+        previous_reference_position = self.position
         samples = self._path_samples()
         projected_point, _tangent, _remaining_length, path_progress = self._project_tool_to_path(tool_position, samples)
         projection_error = distance2(tool_position, projected_point)
         capture_radius = max(0.12, 6.0 * self.tolerance)
         if projection_error <= capture_radius and path_progress > self.geometric_progress_m:
             # Prevent projection from jumping across nearby drawn-path segments.
-            max_progress_step = max(0.004, 3.0 * self.speed * max(dt, 0.0))
+            # This bound must scale with dt. The previous 4 mm minimum at a
+            # 5 ms physics step allowed the geometric reference to advance at
+            # 0.8 m/s even when the requested inspection speed was 0.16 m/s.
+            # Position progress and the published reference velocity must obey
+            # the same speed. Advancing position faster than ``self.speed``
+            # gives NMPC a kinematically inconsistent reference at turns.
+            max_progress_step = max(1.0e-6, self.speed * max(dt, 0.0))
             self.geometric_progress_m = min(path_progress, self.geometric_progress_m + max_progress_step)
         projection, tangent, remaining_length = self._sample_path_at_progress(samples, self.geometric_progress_m)
         tracking_error = distance2(tool_position, projection)
@@ -1137,18 +1307,46 @@ class ReferenceTrajectory:
         slowdown_distance = self._geometric_slowdown_distance(speed)
         speed_scale = clamp(remaining_length / max(slowdown_distance, 1e-9), 0.0, 1.0)
         target_speed = speed * speed_scale
+        preview_distance = min(
+            remaining_length,
+            max(self.preview_min_distance_m, speed * self.preview_time_s),
+        )
+        preview_position, preview_tangent, preview_remaining = self._sample_path_at_progress(
+            samples,
+            self.geometric_progress_m + preview_distance,
+        )
+        del preview_position
+        tangent_alignment = clamp(dot2(tangent, preview_tangent), -1.0, 1.0)
+        heading_change = math.acos(tangent_alignment)
+        curvature = heading_change / max(preview_distance, 1e-6)
+        if curvature > 1e-6:
+            turn_speed_limit = math.sqrt(self.turn_lateral_accel_m_s2 / curvature)
+            target_speed = min(target_speed, turn_speed_limit)
         if tracking_error > capture_radius or remaining_length <= self.tolerance:
             target_speed = 0.0
 
         self.position = projection
         self.velocity = scale2(tangent, target_speed)
-        self.acceleration = (0.0, 0.0)
+        preview_speed_scale = clamp(
+            preview_remaining / max(slowdown_distance, 1e-9),
+            0.0,
+            1.0,
+        )
+        preview_speed = min(speed * preview_speed_scale, target_speed)
+        preview_velocity = scale2(preview_tangent, preview_speed)
+        preview_acceleration = scale2(
+            sub2(preview_velocity, self.velocity),
+            1.0 / self.preview_time_s,
+        )
+        self.acceleration = limit_norm2(preview_acceleration, self.accel_limit)
 
-        completion_distance = max(3.0 * self.tolerance, 0.050)
+        completion_distance = max(self.tolerance, 0.015)
+        completion_progress = max(1.0e-6, self.speed * max(dt, 0.0))
         complete = (
             remaining_length <= completion_distance
+            and distance2(previous_reference_position, self.final_target) <= completion_progress
             and distance2(tool_position, self.final_target) <= completion_distance
-            and math.hypot(tool_velocity[0], tool_velocity[1]) <= 0.075
+            and math.hypot(tool_velocity[0], tool_velocity[1]) <= 0.040
         )
         if complete:
             self.position = self.final_target
@@ -1212,30 +1410,40 @@ class ReferenceTrajectory:
                 if not points or distance2(point, points[-1]) > 1e-6:
                     points.append(point)
         self._path_sample_cache = points if len(points) >= 2 else [self.position, self.final_target]
+        cumulative = [0.0]
+        for index in range(len(self._path_sample_cache) - 1):
+            cumulative.append(
+                cumulative[-1]
+                + distance2(self._path_sample_cache[index], self._path_sample_cache[index + 1])
+            )
+        self._path_cumulative_cache = cumulative
         return self._path_sample_cache
+
+    def _path_cumulative_lengths(self, samples: Sequence[Vec2]) -> list[float]:
+        if samples is self._path_sample_cache and self._path_cumulative_cache is not None:
+            return self._path_cumulative_cache
+        cumulative = [0.0]
+        for index in range(len(samples) - 1):
+            cumulative.append(cumulative[-1] + distance2(samples[index], samples[index + 1]))
+        return cumulative
 
     def _sample_path_at_progress(self, samples: Sequence[Vec2], progress_m: float) -> tuple[Vec2, Vec2, float]:
         if len(samples) < 2:
             return samples[0], (1.0, 0.0), 0.0
 
-        total_length = sum(distance2(samples[index], samples[index + 1]) for index in range(len(samples) - 1))
+        cumulative = self._path_cumulative_lengths(samples)
+        total_length = cumulative[-1]
         progress_m = clamp(progress_m, 0.0, total_length)
-        distance_before = 0.0
-        for index in range(len(samples) - 1):
-            start = samples[index]
-            end = samples[index + 1]
-            segment_length = distance2(start, end)
-            if segment_length <= 1e-9:
-                continue
-            if progress_m < distance_before + segment_length or index == len(samples) - 2:
-                local = clamp((progress_m - distance_before) / segment_length, 0.0, 1.0)
-                tangent = normalize2(sub2(end, start))
-                position = add2(start, scale2(sub2(end, start), local))
-                return position, tangent, max(0.0, total_length - progress_m)
-            distance_before += segment_length
-
-        tangent = normalize2(sub2(samples[-1], samples[-2]))
-        return samples[-1], tangent, 0.0
+        index = min(len(samples) - 2, max(0, bisect.bisect_right(cumulative, progress_m) - 1))
+        while index < len(samples) - 2 and cumulative[index + 1] - cumulative[index] <= 1e-9:
+            index += 1
+        start = samples[index]
+        end = samples[index + 1]
+        segment_length = max(cumulative[index + 1] - cumulative[index], 1e-9)
+        local = clamp((progress_m - cumulative[index]) / segment_length, 0.0, 1.0)
+        tangent = normalize2(sub2(end, start))
+        position = add2(start, scale2(sub2(end, start), local))
+        return position, tangent, max(0.0, total_length - progress_m)
 
     def _project_tool_to_path(self, tool_position: Vec2, samples: Sequence[Vec2]) -> tuple[Vec2, Vec2, float, float]:
         best_projection = samples[0]
@@ -1243,15 +1451,20 @@ class ReferenceTrajectory:
         best_distance_squared = math.inf
         best_remaining_length = 0.0
         best_progress = 0.0
-        total_length = 0.0
-        segment_lengths: list[float] = []
-        for index in range(len(samples) - 1):
-            segment_length = distance2(samples[index], samples[index + 1])
-            segment_lengths.append(segment_length)
-            total_length += segment_length
-
-        distance_before = 0.0
-        for index, segment_length in enumerate(segment_lengths):
+        cumulative = self._path_cumulative_lengths(samples)
+        total_length = cumulative[-1]
+        search_back_m = 0.25
+        search_forward_m = max(0.80, 4.0 * self.speed * self.preview_time_s)
+        first_index = max(
+            0,
+            bisect.bisect_left(cumulative, max(0.0, self.geometric_progress_m - search_back_m)) - 1,
+        )
+        last_index = min(
+            len(samples) - 2,
+            bisect.bisect_right(cumulative, self.geometric_progress_m + search_forward_m),
+        )
+        for index in range(first_index, last_index + 1):
+            segment_length = cumulative[index + 1] - cumulative[index]
             if segment_length <= 1e-9:
                 continue
             start = samples[index]
@@ -1261,7 +1474,7 @@ class ReferenceTrajectory:
             projection = add2(start, scale2(delta, local))
             error = sub2(tool_position, projection)
             distance_squared = dot2(error, error)
-            progress = distance_before + local * segment_length
+            progress = cumulative[index] + local * segment_length
             if (
                 distance_squared < best_distance_squared - 1e-12
                 or abs(distance_squared - best_distance_squared) <= 1e-12
@@ -1272,7 +1485,6 @@ class ReferenceTrajectory:
                 best_tangent = scale2(delta, 1.0 / segment_length)
                 best_progress = progress
                 best_remaining_length = max(0.0, total_length - progress)
-            distance_before += segment_length
 
         if abs(best_tangent[0]) + abs(best_tangent[1]) <= 1e-9:
             best_tangent = (1.0, 0.0)
@@ -1367,8 +1579,14 @@ class ReferenceTrajectory:
 
 
 class WallToolSimulator:
-    def __init__(self, params: SimParams) -> None:
+    def __init__(self, params: SimParams, *, external_plant: bool = False) -> None:
         self.params = params
+        self.external_plant = bool(external_plant)
+        if self.external_plant:
+            raise NotImplementedError(
+                "the CoppeliaSim bridge does not yet drive the two independent tilt-servo channels; "
+                "wall_tool_2d refuses to substitute fixed thrust axes"
+            )
         self.default_target = params.initial_payload
         self.trajectory = ReferenceTrajectory(
             params.initial_payload,
@@ -1377,11 +1595,15 @@ class WallToolSimulator:
             accel_limit=params.reference_accel_limit_mps2,
             jerk_limit=params.reference_jerk_limit_mps3,
             min_segment_duration=params.reference_min_segment_duration_s,
+            preview_time_s=params.reference_preview_time_s,
+            preview_min_distance_m=params.reference_preview_min_distance_m,
+            turn_lateral_accel_m_s2=params.reference_turn_lateral_accel_m_s2,
         )
         self._nmpc: WallToolNMPC | None = None
         self._nmpc_next_solve_t = 0.0
         self._nmpc_last_solution: MPCSolution | None = None
-        self._nmpc_previous_command = (0.0, 0.0, 0.0, 0.0)
+        self._nmpc_previous_command = (0.0, 0.0, 0.0, 0.0, 0.0)
+        self._sensor_rng = random.Random(params.sensor_random_seed)
         self.reset()
 
     def reset(self) -> None:
@@ -1398,23 +1620,56 @@ class WallToolSimulator:
         self.angular_velocity = 0.0
         self.angular_acceleration = 0.0
         initial_distance = self._point_to_polar(self.default_target)[1]
-        initial_tension = 0.0
+        initial_tension = min(
+            self.params.max_spool_tension,
+            self.params.desired_cable_support_fraction * self.params.total_mass * self.params.gravity,
+        )
+        initial_cable_weight = self._payload_supported_cable_weight(initial_distance)
+        initial_hover_thrust = max(0.0, min(
+            self.params.max_thrust_per_drone,
+            0.5 * (self.params.total_mass * self.params.gravity + initial_cable_weight - initial_tension),
+        ))
+        initial_extension = initial_tension / max(self._steel_cable_stiffness(initial_distance), 1e-9)
         self.cable_length = clamp(
-            initial_distance,
+            initial_distance - initial_extension,
             self.params.min_cable_length,
             self.params.max_cable_length,
         )
-        self.cable_stretch = 0.0
+        self.cable_stretch = initial_extension
         self.cable_slack = False
         self.cable_tension_saturated = False
         self.filtered_cable_tension_target = initial_tension
         self.actual_tension = initial_tension
+        self.actual_left_thrust = initial_hover_thrust
+        self.actual_right_thrust = initial_hover_thrust
+        self.estimated_left_thrust = initial_hover_thrust
+        self.estimated_right_thrust = initial_hover_thrust
+        self.last_left_thrust_command = initial_hover_thrust
+        self.last_right_thrust_command = initial_hover_thrust
+        self.actual_left_gimbal_angle = 0.0
+        self.actual_right_gimbal_angle = 0.0
+        self.actual_left_gimbal_rate = 0.0
+        self.actual_right_gimbal_rate = 0.0
+        self.left_gimbal_acceleration = 0.0
+        self.right_gimbal_acceleration = 0.0
+        self.left_gimbal_saturated = False
+        self.right_gimbal_saturated = False
+        self.last_left_gimbal_command = 0.0
+        self.last_right_gimbal_command = 0.0
+        self.actual_reel_velocity = 0.0
         self.load_cell_tension = initial_tension
         self.reel_tension_error_integral = 0.0
         self.last_spool_velocity_cmd = 0.0
         self._nmpc_next_solve_t = 0.0
         self._nmpc_last_solution = None
-        self._nmpc_previous_command = (0.0, 0.0, initial_tension, 0.0)
+        self._nmpc_previous_command = (
+            initial_hover_thrust,
+            initial_hover_thrust,
+            0.0,
+            0.0,
+            0.0,
+        )
+        self._hold_position_error_integral: Vec2 = (0.0, 0.0)
         self.measured_payload = self.position
         self.estimated_payload_velocity = (0.0, 0.0)
         self.measured_theta = 0.0
@@ -1427,6 +1682,16 @@ class WallToolSimulator:
         self.measured_cable_length = self.cable_length
         self.measured_cable_velocity = 0.0
         self.measured_tension = initial_tension
+        # The flight controller does not receive servo shaft-angle feedback.
+        # These are command-driven actuator-state estimates, separate from the
+        # plant's actual servo angles above.
+        self.estimated_left_gimbal_angle = 0.0
+        self.estimated_right_gimbal_angle = 0.0
+        self.estimated_left_gimbal_rate = 0.0
+        self.estimated_right_gimbal_rate = 0.0
+        self._previous_sensor_theta = 0.0
+        self._previous_sensor_position = self.position
+        self._next_sensor_sample_t = -math.inf
         self.normal_gap = clamp(
             self.params.normal_initial_gap_m,
             self.params.normal_gap_min_m,
@@ -1532,8 +1797,18 @@ class WallToolSimulator:
     def _module_center_offsets(self, attitude: float) -> tuple[Vec2, Vec2]:
         return integrated_motor_center_offsets(self.params, attitude)
 
-    def _drone_axes(self, attitude: float) -> tuple[Vec2, Vec2]:
-        return integrated_motor_axes(self.params, attitude)
+    def _drone_axes(
+        self,
+        attitude: float,
+        left_gimbal_angle: float,
+        right_gimbal_angle: float,
+    ) -> tuple[Vec2, Vec2]:
+        return integrated_motor_axes(
+            self.params,
+            attitude,
+            left_gimbal_angle,
+            right_gimbal_angle,
+        )
 
     def _point_to_polar(self, point: Vec2) -> tuple[float, float]:
         attach_point = self._cable_mount_position(point, self.params.nominal_attitude_rad)
@@ -1557,27 +1832,93 @@ class WallToolSimulator:
     def _payload_velocity_from_state(self) -> Vec2:
         return self.velocity
 
-    def _update_sensor_estimate(self) -> None:
-        params = self.params
-        self.measured_theta = self.theta
-        self.measured_theta_dot = self.theta_dot
-        self.measured_cable_length = self.cable_length
-        self.measured_cable_velocity = self.last_spool_velocity_cmd
-        if params.load_cell_filter_tau_s > 0.0:
-            alpha = clamp(params.dt / max(params.load_cell_filter_tau_s + params.dt, 1e-9), 0.0, 1.0)
-            self.load_cell_tension += alpha * (self.actual_tension - self.load_cell_tension)
-            self.measured_tension = clamp(self.load_cell_tension, 0.0, params.max_spool_tension)
-        else:
-            self.load_cell_tension = self.actual_tension
-            self.measured_tension = clamp(self.actual_tension, 0.0, params.max_spool_tension)
-        self.measured_attitude = self.attitude
-        self.measured_angular_velocity = self.angular_velocity
+    @staticmethod
+    def _quantize(value: float, resolution: float) -> float:
+        if not math.isfinite(value) or not math.isfinite(resolution) or resolution <= 0.0:
+            raise ValueError("sensor value and resolution must be finite; resolution must be positive")
+        return round(value / resolution) * resolution
 
-        self.measured_cable_stretch = self.cable_stretch
-        self.measured_line_velocity = self.length_dot
-        self.measured_line_length = self.length
-        self.measured_payload = self.position
-        self.estimated_payload_velocity = self.velocity
+    def _update_sensor_estimate(self, *, force: bool = False) -> None:
+        """Sample explicit encoders, load cell, and IMU and reconstruct x-z state."""
+
+        params = self.params
+        if not force and self.t + 1.0e-12 < self._next_sensor_sample_t:
+            return
+        sample_dt = params.sensor_sample_period_s
+        self._next_sensor_sample_t = self.t + sample_dt
+
+        cable_angle_resolution = 2.0 * math.pi / params.cable_angle_encoder_counts_per_rev
+        reel_length_resolution = (
+            2.0 * math.pi * params.reel_spool_radius_m / params.reel_encoder_counts_per_rev
+        )
+
+        noisy_theta = self.theta + self._sensor_rng.gauss(0.0, params.cable_angle_noise_std_rad)
+        measured_theta = self._quantize(wrap_angle(noisy_theta), cable_angle_resolution)
+        measured_cable_length = self._quantize(
+            self.cable_length + self._sensor_rng.gauss(0.0, params.reel_length_noise_std_m),
+            reel_length_resolution,
+        )
+        measured_cable_length = clamp(
+            measured_cable_length,
+            params.min_cable_length,
+            params.max_cable_length,
+        )
+
+        load_alpha = clamp(
+            sample_dt / max(params.load_cell_filter_tau_s + sample_dt, 1e-9),
+            0.0,
+            1.0,
+        )
+        noisy_tension = self.actual_tension + self._sensor_rng.gauss(0.0, params.load_cell_noise_std_N)
+        self.load_cell_tension += load_alpha * (noisy_tension - self.load_cell_tension)
+        measured_tension = clamp(self.load_cell_tension, 0.0, params.max_spool_tension)
+
+        measured_attitude = self._quantize(
+            self.attitude + self._sensor_rng.gauss(0.0, params.imu_angle_noise_std_rad),
+            2.0 * math.pi / 65536.0,
+        )
+        measured_angular_velocity = self.angular_velocity + self._sensor_rng.gauss(
+            0.0, params.imu_rate_noise_std_rad_s
+        )
+
+        stiffness = self._steel_cable_stiffness(max(measured_cable_length, params.min_cable_length))
+        estimated_stretch = measured_tension / max(stiffness, 1e-9)
+        measured_line_length = measured_cable_length + estimated_stretch
+        cable_out = (math.sin(measured_theta), -math.cos(measured_theta))
+        estimated_mount = add2(params.anchor, scale2(cable_out, measured_line_length))
+        estimated_payload = sub2(estimated_mount, self._cable_mount_offset(measured_attitude))
+
+        velocity_alpha = clamp(
+            sample_dt / max(params.velocity_estimator_time_constant_s + sample_dt, 1e-9),
+            0.0,
+            1.0,
+        )
+        raw_velocity = scale2(sub2(estimated_payload, self._previous_sensor_position), 1.0 / sample_dt)
+        estimated_velocity = add2(
+            self.estimated_payload_velocity,
+            scale2(sub2(raw_velocity, self.estimated_payload_velocity), velocity_alpha),
+        )
+        measured_theta_dot = wrap_angle(measured_theta - self._previous_sensor_theta) / sample_dt
+        measured_line_velocity = (measured_line_length - self.measured_line_length) / sample_dt
+
+        self.measured_theta = measured_theta
+        self.measured_theta_dot = measured_theta_dot
+        self.measured_cable_length = measured_cable_length
+        self.measured_cable_velocity = self._quantize(
+            self.actual_reel_velocity,
+            reel_length_resolution / sample_dt,
+        )
+        self.measured_tension = measured_tension
+        self.measured_attitude = measured_attitude
+        self.measured_angular_velocity = measured_angular_velocity
+        self.measured_cable_stretch = estimated_stretch
+        self.measured_line_velocity = measured_line_velocity
+        self.measured_line_length = measured_line_length
+        self.measured_payload = estimated_payload
+        self.estimated_payload_velocity = estimated_velocity
+
+        self._previous_sensor_theta = measured_theta
+        self._previous_sensor_position = estimated_payload
 
     def _safe_reference(self, reference: ReferenceState) -> ReferenceState:
         return ReferenceState(
@@ -1689,15 +2030,30 @@ class WallToolSimulator:
 
         self.contact_work_mode = self._contact_work_mode_for_reference(reference)
         self.desired_contact_force = params.desired_contact_force_N if self.contact_work_mode else 0.0
-        desired_gap = params.normal_standoff_m
-        feedforward_force = 0.0
+        guide_free_gap = params.normal_standoff_m
         if self.contact_work_mode:
             desired_gap = -self.desired_contact_force / max(params.normal_contact_stiffness_N_m, 1e-9)
-            feedforward_force = self.desired_contact_force
+            guide_free_gap = desired_gap - self.desired_contact_force / max(params.normal_position_kp, 1e-9)
 
         contact_before = self._surface_contact_force(self.normal_gap, self.normal_velocity)
-        normal_error = self.normal_gap - desired_gap
-        actuator_force = feedforward_force + params.normal_position_kp * normal_error + params.normal_position_kd * self.normal_velocity
+        guide_deflection = self.normal_gap - guide_free_gap
+        actuator_force = (
+            params.normal_position_kp * guide_deflection
+            + params.normal_position_kd * self.normal_velocity
+        )
+
+    def _gimbal_servo_spec(self) -> GimbalServoSpec:
+        params = self.params
+        return GimbalServoSpec(
+            max_angle_rad=params.gimbal_max_angle_rad,
+            max_rate_rad_s=params.gimbal_max_rate_rad_s,
+            max_acceleration_rad_s2=params.gimbal_max_acceleration_rad_s2,
+            natural_frequency_rad_s=params.gimbal_natural_frequency_rad_s,
+            damping_ratio=params.gimbal_damping_ratio,
+            command_min_pulse_us=params.gimbal_command_min_pulse_us,
+            command_max_pulse_us=params.gimbal_command_max_pulse_us,
+            command_resolution_us=params.gimbal_command_resolution_us,
+        )
         actuator_force = clamp(
             actuator_force,
             -params.normal_retract_force_limit_N,
@@ -1762,6 +2118,7 @@ class WallToolSimulator:
             wall_width=params.wall_width,
             wall_height=params.wall_height,
             wall_margin=wall_margin,
+            max_payload_speed_m_s=params.work_contact_speed_limit_mps,
             payload_hex_radius=params.payload_hex_radius,
             payload_half_length=params.payload_half_length,
             module_gap=params.module_gap,
@@ -1770,15 +2127,35 @@ class WallToolSimulator:
             hex_face_tilt_rad=params.hex_face_tilt_rad,
             nominal_attitude_rad=params.nominal_attitude_rad,
             rotational_damping=params.rotational_damping,
-            max_thrust_per_drone=params.max_thrust_per_drone,
+            passive_attitude_stiffness_Nm_rad=params.passive_attitude_stiffness_Nm_rad,
+            passive_attitude_damping_Nm_s_rad=params.passive_attitude_damping_Nm_s_rad,
+            motor_thrust_time_constant_s=params.motor_thrust_time_constant_s,
+            max_thrust_per_drone=params.max_thrust_per_drone * params.mpc_thrust_command_fraction,
+            thrust_command_slew_limit_N_s=params.thrust_command_slew_limit_N_s,
+            max_gimbal_angle_rad=params.gimbal_max_angle_rad,
+            max_gimbal_rate_rad_s=params.gimbal_max_rate_rad_s,
+            gimbal_command_slew_limit_rad_s=params.gimbal_command_slew_limit_rad_s,
+            max_gimbal_acceleration_rad_s2=params.gimbal_max_acceleration_rad_s2,
+            gimbal_natural_frequency_rad_s=params.gimbal_natural_frequency_rad_s,
+            gimbal_damping_ratio=params.gimbal_damping_ratio,
             max_cable_tension=params.max_spool_tension,
+            min_tracking_tension=params.min_tracking_tension,
             max_cable_support_fraction=params.max_cable_support_fraction,
+            desired_cable_support_fraction=params.desired_cable_support_fraction,
             min_cable_vertical_efficiency=params.min_cable_vertical_efficiency,
             min_cable_length=params.min_cable_length,
             max_cable_length=params.max_cable_length,
             max_spool_speed=params.max_spool_speed,
+            reel_velocity_time_constant_s=params.reel_velocity_time_constant_s,
+            reel_stall_line_force_N=self._reel_motor_spec().stall_line_force_N,
             reel_velocity_slew_limit_mps2=params.reel_velocity_slew_limit_mps2,
             cable_tension_rate_limit_N_s=params.cable_tension_rate_limit_N_s,
+            cable_stiffness_N_m=params.cable_stiffness_N_m,
+            cable_damping_N_s_m=params.cable_damping_N_s_m,
+            cable_tension_time_constant_s=params.cable_tension_time_constant_s,
+            max_cable_extension_m=params.max_cable_extension_m,
+            cable_mass_per_length_kg_m=self._steel_cable_spec().mass_per_length_kg_m,
+            cable_payload_weight_fraction=params.steel_cable_payload_weight_fraction,
             attitude_limit_rad=params.mpc_attitude_limit_rad,
             slack_limit_m=params.mpc_slack_limit_m,
             tracking_position_weight=params.mpc_tracking_position_weight,
@@ -1791,6 +2168,9 @@ class WallToolSimulator:
             input_rate_weight=params.mpc_input_rate_weight,
             attitude_rate_weight=params.mpc_attitude_rate_weight,
             attitude_weight=params.mpc_attitude_weight,
+            gimbal_angle_weight=params.mpc_gimbal_angle_weight,
+            gimbal_rate_weight=params.mpc_gimbal_rate_weight,
+            cable_support_weight=params.mpc_cable_support_weight,
             slack_weight=params.mpc_slack_weight,
             solver_max_iter=max(20, params.mpc_solver_max_iter),
             solver_tolerance=max(1e-8, params.mpc_solver_tolerance),
@@ -1800,6 +2180,262 @@ class WallToolSimulator:
         if self._nmpc is None:
             self._nmpc = WallToolNMPC(self._nmpc_config())
         return self._nmpc
+
+    @staticmethod
+    def _solve_small_least_squares(
+        matrix: Sequence[Sequence[float]],
+        rhs: Sequence[float],
+    ) -> tuple[float, ...]:
+        """Solve a one-, two-, or three-variable symmetric linear system."""
+        size = len(rhs)
+        if size == 1:
+            if abs(float(matrix[0][0])) < 1e-12:
+                raise ValueError("singular allocation system")
+            return (float(rhs[0]) / float(matrix[0][0]),)
+        if size == 2:
+            a, b = float(matrix[0][0]), float(matrix[0][1])
+            c, d = float(matrix[1][0]), float(matrix[1][1])
+            determinant = a * d - b * c
+            if abs(determinant) < 1e-12:
+                raise ValueError("singular allocation system")
+            return (
+                (float(rhs[0]) * d - b * float(rhs[1])) / determinant,
+                (a * float(rhs[1]) - float(rhs[0]) * c) / determinant,
+            )
+        if size == 3:
+            return solve3(matrix, rhs)
+        if size == 0:
+            return ()
+        raise ValueError("allocation system must contain at most three variables")
+
+    def _bounded_cascade_allocation(
+        self,
+        matrix: Sequence[Sequence[float]],
+        desired_wrench: Sequence[float],
+    ) -> tuple[float, float, float]:
+        """Active-set allocation for left thrust, right thrust, and tension."""
+        params = self.params
+        thrust_limit = params.max_thrust_per_drone * params.mpc_thrust_command_fraction
+        lower = (0.0, 0.0, max(0.0, params.cascade_min_tension_N))
+        upper = (
+            thrust_limit,
+            thrust_limit,
+            min(params.max_spool_tension, params.cascade_max_tension_N),
+        )
+        weights = (1.0, 1.0, max(1e-6, params.cascade_torque_weight))
+        tension_regularization = max(0.0, params.cascade_tension_regularization)
+        nominal_tension = clamp(params.cascade_nominal_tension_N, lower[2], upper[2])
+        best: tuple[float, tuple[float, float, float]] | None = None
+
+        # -1 fixes a variable at its lower bound, 0 leaves it free, and +1
+        # fixes it at its upper bound. With only three actuators, exhaustive
+        # active-set enumeration is deterministic and inexpensive.
+        for modes in itertools.product((-1, 0, 1), repeat=3):
+            command = [
+                lower[index] if mode < 0 else upper[index] if mode > 0 else 0.0
+                for index, mode in enumerate(modes)
+            ]
+            free = [index for index, mode in enumerate(modes) if mode == 0]
+            residual_rhs = [
+                float(desired_wrench[row])
+                - sum(
+                    float(matrix[row][column]) * command[column]
+                    for column in range(3)
+                    if column not in free
+                )
+                for row in range(3)
+            ]
+            if free:
+                normal_matrix = [
+                    [
+                        sum(
+                            weights[row]
+                            * float(matrix[row][column])
+                            * float(matrix[row][other])
+                            for row in range(3)
+                        )
+                        + (tension_regularization if column == other == 2 else 0.0)
+                        for other in free
+                    ]
+                    for column in free
+                ]
+                normal_rhs = [
+                    sum(
+                        weights[row] * float(matrix[row][column]) * residual_rhs[row]
+                        for row in range(3)
+                    )
+                    + (tension_regularization * nominal_tension if column == 2 else 0.0)
+                    for column in free
+                ]
+                try:
+                    free_solution = self._solve_small_least_squares(normal_matrix, normal_rhs)
+                except ValueError:
+                    continue
+                for column, value in zip(free, free_solution):
+                    command[column] = float(value)
+
+            if any(
+                command[index] < lower[index] - 1e-9
+                or command[index] > upper[index] + 1e-9
+                for index in range(3)
+            ):
+                continue
+            wrench_error = [
+                sum(float(matrix[row][column]) * command[column] for column in range(3))
+                - float(desired_wrench[row])
+                for row in range(3)
+            ]
+            cost = sum(weights[row] * wrench_error[row] ** 2 for row in range(3))
+            cost += tension_regularization * (command[2] - nominal_tension) ** 2
+            candidate = (cost, (command[0], command[1], command[2]))
+            if best is None or candidate[0] < best[0]:
+                best = candidate
+
+        if best is None:
+            hover = min(
+                thrust_limit,
+                params.total_mass * params.gravity
+                / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9),
+            )
+            return hover, hover, nominal_tension
+        return best[1]
+
+    def _sensor_cascade_command(
+        self,
+        reference: ReferenceState,
+    ) -> tuple[float, float, float, float]:
+        """Compute a command using only encoder, load-cell, and IMU estimates.
+
+        With the default passive pitch guide, the outer loop requests only x-z
+        force and uses a constant cable-tension setpoint for smooth allocation.
+        The optional free-pitch model also requests pitch torque and uses the
+        bounded three-actuator allocator.
+        The inner load-cell PI loop converts that setpoint into reel velocity;
+        the reel encoder closes the velocity loop in the motor drive.
+        """
+        params = self.params
+        position_error = sub2(reference.position, self.measured_payload)
+        velocity_error = sub2(reference.velocity, self.estimated_payload_velocity)
+        desired_acceleration = limit_norm2(
+            (
+                reference.acceleration[0]
+                + params.cascade_position_kp * position_error[0]
+                + params.cascade_velocity_kd * velocity_error[0],
+                reference.acceleration[1]
+                + params.cascade_position_kp * position_error[1]
+                + params.cascade_velocity_kd * velocity_error[1],
+            ),
+            params.cascade_acceleration_limit_m_s2,
+        )
+
+        cable_mount = self._cable_mount_position(self.measured_payload, self.measured_attitude)
+        anchor_to_mount = sub2(cable_mount, params.anchor)
+        distance = max(1e-6, math.hypot(anchor_to_mount[0], anchor_to_mount[1]))
+        cable_out = (anchor_to_mount[0] / distance, anchor_to_mount[1] / distance)
+        cable_axis = (-cable_out[0], -cable_out[1])
+        allocation_attitude = (
+            params.nominal_attitude_rad
+            if params.payload_pitch_constrained
+            else self.measured_attitude
+        )
+        left_axis, right_axis = self._drone_axes(
+            allocation_attitude,
+            self.estimated_left_gimbal_angle,
+            self.estimated_right_gimbal_angle,
+        )
+        left_arm, right_arm = self._module_center_offsets(allocation_attitude)
+        cable_arm = self._cable_mount_offset(self.measured_attitude)
+        cable_weight_force = (0.0, -self._payload_supported_cable_weight(distance))
+        desired_force = (
+            params.total_mass * desired_acceleration[0] - cable_weight_force[0],
+            params.total_mass * (desired_acceleration[1] + params.gravity)
+            - cable_weight_force[1],
+        )
+        if params.payload_pitch_constrained:
+            desired_tension = clamp(
+                params.cascade_nominal_tension_N,
+                params.cascade_min_tension_N,
+                min(params.cascade_max_tension_N, params.max_spool_tension),
+            )
+            required_drone_force = (
+                desired_force[0] - desired_tension * cable_axis[0],
+                desired_force[1] - desired_tension * cable_axis[1],
+            )
+            determinant = left_axis[0] * right_axis[1] - right_axis[0] * left_axis[1]
+            if abs(determinant) < 1e-9:
+                hover = params.total_mass * params.gravity / max(
+                    2.0 * math.cos(params.hex_face_tilt_rad), 1e-9
+                )
+                left_command = hover
+                right_command = hover
+            else:
+                left_command = (
+                    required_drone_force[0] * right_axis[1]
+                    - required_drone_force[1] * right_axis[0]
+                ) / determinant
+                right_command = (
+                    left_axis[0] * required_drone_force[1]
+                    - left_axis[1] * required_drone_force[0]
+                ) / determinant
+            thrust_limit = params.max_thrust_per_drone * params.mpc_thrust_command_fraction
+            left_command = clamp(left_command, 0.0, thrust_limit)
+            right_command = clamp(right_command, 0.0, thrust_limit)
+        else:
+            cable_weight_torque = cross2(cable_arm, cable_weight_force)
+            desired_angular_acceleration = (
+                -params.cascade_attitude_kp
+                * wrap_angle(self.measured_attitude - params.nominal_attitude_rad)
+                - params.cascade_attitude_kd * self.measured_angular_velocity
+            )
+            desired_wrench = (
+                desired_force[0],
+                desired_force[1],
+                params.assembly_inertia * desired_angular_acceleration
+                + params.rotational_damping * self.measured_angular_velocity
+                - cable_weight_torque,
+            )
+            allocation_matrix = (
+                (left_axis[0], right_axis[0], cable_axis[0]),
+                (left_axis[1], right_axis[1], cable_axis[1]),
+                (
+                    cross2(left_arm, left_axis),
+                    cross2(right_arm, right_axis),
+                    cross2(cable_arm, cable_axis),
+                ),
+            )
+            left_command, right_command, desired_tension = self._bounded_cascade_allocation(
+                allocation_matrix,
+                desired_wrench,
+            )
+
+        mount_offset = cable_arm
+        mount_velocity = add2(
+            self.estimated_payload_velocity,
+            scale2((-mount_offset[1], mount_offset[0]), self.measured_angular_velocity),
+        )
+        distance_rate = dot2(cable_out, mount_velocity)
+        tension_error = self.measured_tension - desired_tension
+        unsaturated_reel_command = (
+            distance_rate
+            + params.reel_tension_kp_mps_N * tension_error
+            + params.reel_tension_ki_mps_Ns * self.reel_tension_error_integral
+        )
+        reel_limit = min(params.max_spool_speed, params.max_control_spool_speed)
+        reel_command = clamp(unsaturated_reel_command, -reel_limit, reel_limit)
+        # Conditional integration prevents the load-cell loop from winding up
+        # while the reel is at its operational speed bound.
+        driving_out_of_saturation = (
+            abs(unsaturated_reel_command - reel_command) <= 1e-12
+            or (reel_command >= reel_limit and tension_error < 0.0)
+            or (reel_command <= -reel_limit and tension_error > 0.0)
+        )
+        if driving_out_of_saturation:
+            self.reel_tension_error_integral = clamp(
+                self.reel_tension_error_integral + tension_error * params.dt,
+                -params.reel_tension_integral_limit_Ns,
+                params.reel_tension_integral_limit_Ns,
+            )
+        return left_command, right_command, desired_tension, reel_command
 
     def _nmpc_reference_horizon(self, reference: ReferenceState) -> MPCReferenceHorizon:
         params = self.params
@@ -1837,7 +2473,27 @@ class WallToolSimulator:
         reference = self._safe_reference(
             self.trajectory.geometric_reference(self.measured_payload, self.estimated_payload_velocity, params.dt)
         )
-        self._update_normal_contact(reference)
+        if reference.active:
+            self._hold_position_error_integral = (0.0, 0.0)
+        else:
+            hold_error = sub2(reference.position, self.measured_payload)
+            self._hold_position_error_integral = (
+                clamp(
+                    self._hold_position_error_integral[0] + hold_error[0] * params.dt,
+                    -params.mpc_hold_integral_limit_m_s,
+                    params.mpc_hold_integral_limit_m_s,
+                ),
+                clamp(
+                    self._hold_position_error_integral[1] + hold_error[1] * params.dt,
+                    -params.mpc_hold_integral_limit_m_s,
+                    params.mpc_hold_integral_limit_m_s,
+                ),
+            )
+        if self.external_plant:
+            self.contact_work_mode = self._contact_work_mode_for_reference(reference)
+            self.desired_contact_force = params.desired_contact_force_N if self.contact_work_mode else 0.0
+        else:
+            self._update_normal_contact(reference)
 
         true_mount = self._cable_mount_position(self.position, self.attitude)
         true_distance = distance2(params.anchor, true_mount)
@@ -1848,11 +2504,49 @@ class WallToolSimulator:
             self.estimated_payload_velocity[1],
             self.measured_attitude,
             self.measured_angular_velocity,
-            clamp(max(self.cable_length, true_distance), params.min_cable_length, params.max_cable_length),
+            clamp(self.measured_cable_length, params.min_cable_length, params.max_cable_length),
+            clamp(self.estimated_left_thrust, 0.0, params.max_thrust_per_drone),
+            clamp(self.estimated_right_thrust, 0.0, params.max_thrust_per_drone),
+            clamp(self.measured_cable_velocity, -params.max_spool_speed, params.max_spool_speed),
+            clamp(self.measured_tension, 0.0, params.max_spool_tension),
+            clamp(
+                self.estimated_left_gimbal_angle,
+                -params.gimbal_max_angle_rad,
+                params.gimbal_max_angle_rad,
+            ),
+            clamp(
+                self.estimated_right_gimbal_angle,
+                -params.gimbal_max_angle_rad,
+                params.gimbal_max_angle_rad,
+            ),
+            clamp(
+                self.estimated_left_gimbal_rate,
+                -params.gimbal_max_rate_rad_s,
+                params.gimbal_max_rate_rad_s,
+            ),
+            clamp(
+                self.estimated_right_gimbal_rate,
+                -params.gimbal_max_rate_rad_s,
+                params.gimbal_max_rate_rad_s,
+            ),
         )
 
+        if params.control_law != "vector_thrust_nmpc":
+            raise RuntimeError(f"unsupported controller '{params.control_law}'")
         if self._nmpc_last_solution is None or self.t + 1e-12 >= self._nmpc_next_solve_t:
             horizon = self._nmpc_reference_horizon(reference)
+            if not reference.active:
+                hold_correction = scale2(
+                    self._hold_position_error_integral,
+                    params.mpc_hold_integral_gain_s_inv,
+                )
+                horizon = MPCReferenceHorizon(
+                    positions=tuple(
+                        self._clamp_wall_point(add2(position, hold_correction))
+                        for position in horizon.positions
+                    ),
+                    velocities=horizon.velocities,
+                )
             solution = self._ensure_nmpc().solve(
                 measured_state=measured_state,
                 reference=horizon,
@@ -1863,41 +2557,167 @@ class WallToolSimulator:
         else:
             solution = self._nmpc_last_solution
 
-        left_thrust = clamp(solution.left_thrust, 0.0, params.max_thrust_per_drone)
-        right_thrust = clamp(solution.right_thrust, 0.0, params.max_thrust_per_drone)
+        if not solution.success:
+            raise RuntimeError(
+                f"vector-thrust NMPC returned an unsuccessful solution: {solution.status}"
+            )
+
+        command_values = (
+            solution.left_thrust,
+            solution.right_thrust,
+            solution.cable_tension,
+            solution.spool_velocity,
+            solution.left_gimbal_angle,
+            solution.right_gimbal_angle,
+        )
+        if not all(math.isfinite(value) for value in command_values):
+            raise RuntimeError(f"NMPC produced a non-finite actuator command: {command_values!r}")
+        thrust_limit = params.max_thrust_per_drone * params.mpc_thrust_command_fraction
+        numerical_tolerance = 1.0e-6
+        if not -numerical_tolerance <= solution.left_thrust <= thrust_limit + numerical_tolerance:
+            raise RuntimeError(f"left thrust command violates hardware limit: {solution.left_thrust:.6f} N")
+        if not -numerical_tolerance <= solution.right_thrust <= thrust_limit + numerical_tolerance:
+            raise RuntimeError(f"right thrust command violates hardware limit: {solution.right_thrust:.6f} N")
+        if abs(solution.spool_velocity) > params.max_spool_speed + numerical_tolerance:
+            raise RuntimeError(
+                f"reel velocity command violates hardware limit: {solution.spool_velocity:.6f} m/s"
+            )
+        if not -numerical_tolerance <= solution.cable_tension <= params.max_spool_tension + numerical_tolerance:
+            raise RuntimeError(
+                f"predicted cable tension is outside the load-cell range: {solution.cable_tension:.6f} N"
+            )
+        left_thrust_target = clamp(solution.left_thrust, 0.0, thrust_limit)
+        right_thrust_target = clamp(solution.right_thrust, 0.0, thrust_limit)
+        left_thrust_command = slew_toward(
+            self.last_left_thrust_command,
+            left_thrust_target,
+            params.thrust_command_slew_limit_N_s,
+            params.dt,
+        )
+        right_thrust_command = slew_toward(
+            self.last_right_thrust_command,
+            right_thrust_target,
+            params.thrust_command_slew_limit_N_s,
+            params.dt,
+        )
         desired_cable_tension = clamp(solution.cable_tension, 0.0, params.max_spool_tension)
-        tension_error = desired_cable_tension - self.measured_tension
-        self.reel_tension_error_integral = clamp(
-            self.reel_tension_error_integral + tension_error * params.dt,
-            -params.reel_tension_integral_limit_Ns,
-            params.reel_tension_integral_limit_Ns,
+        spool_velocity_target = clamp(
+            solution.spool_velocity,
+            -params.max_spool_speed,
+            params.max_spool_speed,
         )
-        spool_velocity_request = (
-            solution.spool_velocity
-            - params.reel_tension_kp_mps_N * tension_error
-            - params.reel_tension_ki_mps_Ns * self.reel_tension_error_integral
-        )
-        reel_motor = self._reel_motor_spec()
-        spool_velocity_cmd = reel_motor.velocity_step(
+        spool_velocity_command = slew_toward(
             self.last_spool_velocity_cmd,
-            spool_velocity_request,
+            spool_velocity_target,
+            params.reel_velocity_slew_limit_mps2,
+            params.dt,
+        )
+        gimbal_servo = self._gimbal_servo_spec()
+        left_gimbal_target = gimbal_servo.realize_pwm_command(solution.left_gimbal_angle)
+        right_gimbal_target = gimbal_servo.realize_pwm_command(solution.right_gimbal_angle)
+        left_gimbal_command = gimbal_servo.realize_pwm_command(slew_toward(
+            self.last_left_gimbal_command,
+            left_gimbal_target,
+            params.gimbal_command_slew_limit_rad_s,
+            params.dt,
+        ))
+        right_gimbal_command = gimbal_servo.realize_pwm_command(slew_toward(
+            self.last_right_gimbal_command,
+            right_gimbal_target,
+            params.gimbal_command_slew_limit_rad_s,
+            params.dt,
+        ))
+        actual_left_gimbal_command = clamp(
+            left_gimbal_command + params.gimbal_left_zero_error_rad,
+            -params.gimbal_max_angle_rad,
+            params.gimbal_max_angle_rad,
+        )
+        actual_right_gimbal_command = clamp(
+            right_gimbal_command + params.gimbal_right_zero_error_rad,
+            -params.gimbal_max_angle_rad,
+            params.gimbal_max_angle_rad,
+        )
+
+        reel_motor = self._reel_motor_spec()
+        motor_alpha = clamp(
+            params.dt / max(params.motor_thrust_time_constant_s + params.dt, 1e-9),
+            0.0,
+            1.0,
+        )
+        self.actual_left_thrust += motor_alpha * (left_thrust_command - self.actual_left_thrust)
+        self.actual_right_thrust += motor_alpha * (right_thrust_command - self.actual_right_thrust)
+        self.estimated_left_thrust += motor_alpha * (left_thrust_command - self.estimated_left_thrust)
+        self.estimated_right_thrust += motor_alpha * (right_thrust_command - self.estimated_right_thrust)
+        (
+            self.actual_left_gimbal_angle,
+            self.actual_left_gimbal_rate,
+            self.left_gimbal_acceleration,
+            self.left_gimbal_saturated,
+        ) = gimbal_servo.step(
+            self.actual_left_gimbal_angle,
+            self.actual_left_gimbal_rate,
+            actual_left_gimbal_command,
+            params.dt,
+        )
+        (
+            self.estimated_left_gimbal_angle,
+            self.estimated_left_gimbal_rate,
+            _,
+            _,
+        ) = gimbal_servo.step(
+            self.estimated_left_gimbal_angle,
+            self.estimated_left_gimbal_rate,
+            left_gimbal_command,
+            params.dt,
+        )
+        (
+            self.estimated_right_gimbal_angle,
+            self.estimated_right_gimbal_rate,
+            _,
+            _,
+        ) = gimbal_servo.step(
+            self.estimated_right_gimbal_angle,
+            self.estimated_right_gimbal_rate,
+            right_gimbal_command,
+            params.dt,
+        )
+        (
+            self.actual_right_gimbal_angle,
+            self.actual_right_gimbal_rate,
+            self.right_gimbal_acceleration,
+            self.right_gimbal_saturated,
+        ) = gimbal_servo.step(
+            self.actual_right_gimbal_angle,
+            self.actual_right_gimbal_rate,
+            actual_right_gimbal_command,
+            params.dt,
+        )
+        self.actual_reel_velocity = reel_motor.velocity_step(
+            self.actual_reel_velocity,
+            spool_velocity_command,
             self.measured_tension,
             params.dt,
         )
-        spool_velocity_cmd = clamp(
-            spool_velocity_cmd,
+        self.actual_reel_velocity = clamp(
+            self.actual_reel_velocity,
             -min(params.max_spool_speed, reel_motor.max_line_speed_m_s),
             min(params.max_spool_speed, reel_motor.max_line_speed_m_s),
         )
-
         previous_cable_length = self.cable_length
         self.cable_length = clamp(
-            self.cable_length + spool_velocity_cmd * params.dt,
+            self.cable_length + self.actual_reel_velocity * params.dt,
             params.min_cable_length,
             params.max_cable_length,
         )
-        spool_velocity_cmd = (self.cable_length - previous_cable_length) / max(params.dt, 1e-9)
-        self.last_spool_velocity_cmd = spool_velocity_cmd
+        self.actual_reel_velocity = (self.cable_length - previous_cable_length) / max(params.dt, 1e-9)
+        left_thrust = self.actual_left_thrust
+        right_thrust = self.actual_right_thrust
+        spool_velocity = self.actual_reel_velocity
+        self.last_left_thrust_command = left_thrust_command
+        self.last_right_thrust_command = right_thrust_command
+        self.last_left_gimbal_command = left_gimbal_command
+        self.last_right_gimbal_command = right_gimbal_command
+        self.last_spool_velocity_cmd = spool_velocity_command
 
         true_cable_arm = self._cable_mount_offset(self.attitude)
         true_mount_position = add2(self.position, true_cable_arm)
@@ -1908,14 +2728,11 @@ class WallToolSimulator:
         true_cable_axis = (-true_cable_out[0], -true_cable_out[1])
         radial_mount_velocity = dot2(true_cable_out, true_mount_velocity)
         cable_extension = true_distance - self.cable_length
-        cable_extension_rate = radial_mount_velocity - spool_velocity_cmd
+        cable_extension_rate = radial_mount_velocity - spool_velocity
         cable_stiffness = self._steel_cable_stiffness(true_distance)
         cable_damping = self._steel_cable_damping(true_distance)
-        raw_tension = (
-            cable_stiffness * max(0.0, cable_extension)
-            + cable_damping * cable_extension_rate
-        )
-        actual_tension_limit = self._cable_support_tension_limit(true_cable_axis, params)
+        raw_tension = cable_stiffness * max(0.0, cable_extension) + cable_damping * cable_extension_rate
+        actual_tension_limit = params.max_spool_tension
         self.cable_tension_saturated = raw_tension > actual_tension_limit
         if cable_extension >= -params.cable_taut_band:
             tension = clamp(raw_tension, 0.0, actual_tension_limit)
@@ -1926,7 +2743,11 @@ class WallToolSimulator:
         self.cable_slack = cable_extension < -params.cable_taut_band or tension <= 1e-9
         cable_force = scale2(true_cable_axis, tension)
 
-        true_left_axis, true_right_axis = self._drone_axes(self.attitude)
+        true_left_axis, true_right_axis = self._drone_axes(
+            self.attitude,
+            self.actual_left_gimbal_angle,
+            self.actual_right_gimbal_angle,
+        )
         true_left_arm, true_right_arm = self._module_center_offsets(self.attitude)
         left_force = scale2(true_left_axis, left_thrust)
         right_force = scale2(true_right_axis, right_thrust)
@@ -1936,31 +2757,51 @@ class WallToolSimulator:
         right_torque = cross2(true_right_arm, right_force)
         cable_weight_force = (0.0, -self._payload_supported_cable_weight(true_distance))
         cable_weight_torque = cross2(true_cable_arm, cable_weight_force)
+        passive_attitude_torque = (
+            -params.passive_attitude_stiffness_Nm_rad
+            * math.sin(self.attitude - params.nominal_attitude_rad)
+            - params.passive_attitude_damping_Nm_s_rad * self.angular_velocity
+        )
         net_attitude_torque = (
             cable_torque
             + left_torque
             + right_torque
             + cable_weight_torque
             - params.rotational_damping * self.angular_velocity
+            + passive_attitude_torque
         )
         gravity_force = (0.0, -mass * params.gravity)
         wind_force = self._wind_force()
         net_force = add2(add2(add2(add2(drone_force, cable_force), gravity_force), wind_force), cable_weight_force)
         self.acceleration = scale2(net_force, 1.0 / mass)
-        self.angular_acceleration = net_attitude_torque / max(params.assembly_inertia, 1e-9)
-
         self.velocity = add2(self.velocity, scale2(self.acceleration, params.dt))
         self.position = add2(self.position, scale2(self.velocity, params.dt))
+        if params.payload_pitch_constrained:
+            raise RuntimeError("ideal payload pitch constraints are disabled for the inspection model")
+        self.angular_acceleration = net_attitude_torque / max(params.assembly_inertia, 1e-9)
         self.angular_velocity += self.angular_acceleration * params.dt
         self.attitude = wrap_angle(self.attitude + self.angular_velocity * params.dt)
         self.t += params.dt
         self._update_cable_coordinates()
         self._update_sensor_estimate()
-        self._nmpc_previous_command = (left_thrust, right_thrust, desired_cable_tension, spool_velocity_cmd)
+        self._nmpc_previous_command = (
+            left_thrust_command,
+            right_thrust_command,
+            spool_velocity_command,
+            left_gimbal_command,
+            right_gimbal_command,
+        )
 
         control_tangential_axis = (math.cos(self.theta), math.sin(self.theta))
         tangential_force = dot2(drone_force, control_tangential_axis)
-        desired_drone_force = drone_force
+        desired_left_axis, desired_right_axis = self._drone_axes(
+            self.attitude,
+            left_gimbal_command,
+            right_gimbal_command,
+        )
+        desired_left_force = scale2(desired_left_axis, left_thrust_command)
+        desired_right_force = scale2(desired_right_axis, right_thrust_command)
+        desired_drone_force = add2(desired_left_force, desired_right_force)
         speed_error = sub2(reference.velocity, self.estimated_payload_velocity)
         position_error = sub2(reference.position, self.measured_payload)
         swing_energy = 0.5 * mass * (
@@ -1972,14 +2813,16 @@ class WallToolSimulator:
             right_thrust,
             tension,
             tangential_force,
-            spool_velocity_cmd,
-            math.hypot(drone_force[0], drone_force[1]) / max(mass, 1e-9),
+            spool_velocity_command,
+            math.hypot(desired_drone_force[0], desired_drone_force[1]) / max(mass, 1e-9),
             desired_cable_tension,
             desired_drone_force,
             drone_force,
             cable_force,
             wind_force,
-            self.cable_tension_saturated,
+            self.cable_tension_saturated
+            or self.left_gimbal_saturated
+            or self.right_gimbal_saturated,
             reference,
             desired_tangential_force=tangential_force,
             desired_attitude_torque=0.0,
@@ -2087,7 +2930,16 @@ class WallToolSimulator:
             normal_wind_force=self.normal_wind_force,
             contact_force=self.contact_force,
             desired_contact_force=self.desired_contact_force,
-            contact_valid=self._contact_valid_for_reference(reference),
+            contact_valid=False,
+            inspection_valid=(
+                distance2(payload, desired_tool_head) <= self.params.work_contact_tracking_limit_m
+                and math.hypot(self.velocity[0], self.velocity[1])
+                <= self.params.work_contact_speed_limit_mps
+                and abs(self.attitude - self.params.nominal_attitude_rad)
+                <= self.params.inspection_attitude_limit_rad
+                and abs(self.angular_velocity)
+                <= self.params.work_contact_angular_rate_limit_rad_s
+            ),
             work_mode=self.contact_work_mode,
             desired_attitude_torque=desired_attitude_torque,
             attitude_torque=attitude_torque,
@@ -2096,6 +2948,16 @@ class WallToolSimulator:
             right_torque=right_torque,
             left_thrust=left_thrust,
             right_thrust=right_thrust,
+            left_gimbal_angle=self.actual_left_gimbal_angle,
+            right_gimbal_angle=self.actual_right_gimbal_angle,
+            left_gimbal_rate=self.actual_left_gimbal_rate,
+            right_gimbal_rate=self.actual_right_gimbal_rate,
+            left_gimbal_angle_command=self.last_left_gimbal_command,
+            right_gimbal_angle_command=self.last_right_gimbal_command,
+            estimated_left_gimbal_angle=self.estimated_left_gimbal_angle,
+            estimated_right_gimbal_angle=self.estimated_right_gimbal_angle,
+            estimated_left_gimbal_rate=self.estimated_left_gimbal_rate,
+            estimated_right_gimbal_rate=self.estimated_right_gimbal_rate,
             tension=tension,
             tangential_force=tangential_force,
             desired_tangential_force=desired_tangential_force,
@@ -2118,6 +2980,12 @@ class WallToolSimulator:
             clf_projected_accel_m_s2=clf_projected_accel_m_s2,
             mpc_predicted_path=mpc_solution.predicted_positions if mpc_solution is not None else (),
             mpc_predicted_attitudes=mpc_solution.predicted_attitudes if mpc_solution is not None else (),
+            mpc_predicted_left_gimbal_angles=(
+                mpc_solution.predicted_left_gimbal_angles if mpc_solution is not None else ()
+            ),
+            mpc_predicted_right_gimbal_angles=(
+                mpc_solution.predicted_right_gimbal_angles if mpc_solution is not None else ()
+            ),
             mpc_predicted_tensions=mpc_solution.predicted_tensions if mpc_solution is not None else (),
             mpc_predicted_spool_speeds=mpc_solution.predicted_spool_speeds if mpc_solution is not None else (),
             mpc_status=mpc_solution.status if mpc_solution is not None else "",
@@ -2181,13 +3049,20 @@ class IntegratedToolArtist:
         self,
         center: Vec2,
         attitude: float,
+        left_gimbal_angle: float,
+        right_gimbal_angle: float,
         left_motor_center: Vec2 | None = None,
         right_motor_center: Vec2 | None = None,
     ) -> None:
         params = self.params
         if left_motor_center is None or right_motor_center is None:
             left_motor_center, right_motor_center = integrated_motor_centers(params, center, attitude)
-        left_axis, right_axis = integrated_motor_axes(params, attitude)
+        left_axis, right_axis = integrated_motor_axes(
+            params,
+            attitude,
+            left_gimbal_angle,
+            right_gimbal_angle,
+        )
         body_half_length = max(
             params.payload_half_length,
             distance2(center, left_motor_center) + 0.09,
@@ -2304,7 +3179,7 @@ class WallToolApp:
             self.ax.text(
                 params.contact_work_x_min,
                 params.contact_work_z_max + 0.06,
-                "cleaning bay",
+                "inspection bay",
                 color="#2f6f4e",
                 fontsize=8.5,
                 va="bottom",
@@ -2472,7 +3347,14 @@ class WallToolApp:
 
         attitude = state.attitude
         left_center, right_center = self.module_centers(state.payload, attitude)
-        self.tool_artist.update(state.payload, attitude, left_center, right_center)
+        self.tool_artist.update(
+            state.payload,
+            attitude,
+            state.left_gimbal_angle,
+            state.right_gimbal_angle,
+            left_center,
+            right_center,
+        )
         self.structure_line.set_data(
             [left_center[0], state.payload[0], right_center[0]],
             [left_center[1], state.payload[1], right_center[1]],
@@ -2486,7 +3368,11 @@ class WallToolApp:
         self.attitude_line.set_data([state.payload[0], attitude_tip[0]], [state.payload[1], attitude_tip[1]])
         self.tool_line.set_data([state.tool_head[0]], [state.tool_head[1]])
 
-        left_axis, right_axis = self.sim._drone_axes(attitude)
+        left_axis, right_axis = self.sim._drone_axes(
+            attitude,
+            state.left_gimbal_angle,
+            state.right_gimbal_angle,
+        )
         guide_length = 0.30
         self.left_axis_guide.set_data(
             [left_center[0], left_center[0] + left_axis[0] * guide_length],
@@ -2520,11 +3406,14 @@ class WallToolApp:
         controller_state = "OK"
         if state.cable_slack:
             controller_state = "SLACK"
+        elif state.saturated:
+            controller_state = "LIMIT"
         window_text = self._window_metrics_text()
         return (
             f"t {state.t:6.1f}s  wp {state.active_waypoints:2d}  {controller_state}\n"
             f"tracking {state.tool_error:5.3f}m  speed {speed:4.2f}m/s  accel {acceleration:4.2f}m/s^2\n"
-            f"contact {state.contact_force:4.2f}N  tension {state.measured_tension:4.2f}N  support {100.0 * cable_support:4.0f}%\n"
+            f"gimbals {math.degrees(state.left_gimbal_angle):+5.1f}/{math.degrees(state.right_gimbal_angle):+5.1f}deg  "
+            f"tension {state.measured_tension:4.2f}N  support {100.0 * cable_support:4.0f}%\n"
             f"inputs L {state.left_thrust:4.2f}N  R {state.right_thrust:4.2f}N  reel {state.spool_velocity_cmd:+5.3f}m/s\n"
             f"mpc {1000.0 * state.mpc_solve_time_s:4.1f}ms  {state.mpc_status[:22]}\n"
             f"{window_text}"

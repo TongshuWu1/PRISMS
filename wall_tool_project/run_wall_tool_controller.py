@@ -11,6 +11,7 @@ to write a logged controller session, or `--mode quick` for a short smoke test.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
         choices=("log", "qt", "tk", "ui", "quick"),
         default=DEFAULT_MODE,
         help=(
-            "qt opens the hybrid Matplotlib/PyQtGraph UI, tk opens the Tk fallback, "
+            "qt opens the hybrid Matplotlib/PyQtGraph UI, tk opens the Tk UI, "
             "ui opens the Matplotlib UI, log writes a fresh report, quick runs a smoke test."
         ),
     )
@@ -66,9 +67,10 @@ def run_logged(output_dir: Path | None = None) -> int:
     print(f"RMS error [m]: {float(summary['rms_error_m']):.4f}")
     print(f"Max error [m]: {float(summary['max_error_m']):.4f}")
     print(f"Coverage fraction: {float(summary.get('coverage_fraction', 0.0)):.3f}")
-    print(f"Contact valid fraction: {float(summary.get('contact_valid_fraction', 0.0)):.3f}")
-    print(f"Work-mode contact valid fraction: {float(summary.get('work_mode_contact_valid_fraction', 0.0)):.3f}")
-    print(f"Mean contact force [N]: {float(summary.get('mean_contact_force_N', 0.0)):.3f}")
+    print(f"Inspection valid fraction: {float(summary.get('inspection_valid_fraction', 0.0)):.3f}")
+    print(f"Max gimbal angle [deg]: {float(summary.get('max_gimbal_angle_deg', 0.0)):.2f}")
+    print(f"Max MPC solve time [ms]: {float(summary.get('max_mpc_solve_time_ms', 0.0)):.2f}")
+    print(f"MPC deadline miss fraction: {float(summary.get('mpc_deadline_miss_fraction', 0.0)):.4f}")
     print(f"Mean cable support fraction: {float(summary['mean_cable_support_fraction']):.3f}")
     print(f"Mean motor power ratio: {float(summary['mean_drone_power_ratio']):.3f}")
     print(f"Mean swing energy [J]: {float(summary.get('mean_swing_energy_J', 0.0)):.6f}")
@@ -89,9 +91,14 @@ def run_quick(duration_s: float) -> int:
         state = simulator.step()
     print(f"Quick check duration [s]: {state.t:.2f}")
     print(f"Tracking error [m]: {state.tool_error:.4f}")
-    print(f"Contact force [N]: {state.contact_force:.3f}")
-    print(f"Contact valid: {state.contact_valid}")
-    print(f"Normal gap [mm]: {1000.0 * state.normal_gap:.1f}")
+    print(
+        "Gimbal angles [deg]: "
+        f"{math.degrees(state.left_gimbal_angle):+.2f} / "
+        f"{math.degrees(state.right_gimbal_angle):+.2f}"
+    )
+    print(f"Payload attitude [deg]: {math.degrees(state.attitude):+.3f}")
+    print(f"Cable tension [N]: {state.tension:.3f}")
+    print(f"MPC solve time [ms]: {1000.0 * state.mpc_solve_time_s:.2f}")
     print(f"Active waypoints: {state.active_waypoints}")
     return 0
 

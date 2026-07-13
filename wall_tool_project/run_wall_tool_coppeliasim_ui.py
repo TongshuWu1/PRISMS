@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PyCharm-friendly entry point for the vector-thrust CoppeliaSim remake."""
+"""Launch the interactive PRISMS CoppeliaSim trajectory planner."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ for path in (WALL_TOOL_3D_ROOT, WALL_TOOL_2D_ROOT, PROJECT_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from coppeliasim_vector_tool.runner import main  # noqa: E402
+from coppeliasim_vector_tool.control_ui import main  # noqa: E402
 
 
 if __name__ == "__main__":

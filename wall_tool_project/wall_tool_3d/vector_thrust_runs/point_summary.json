@@ -1,0 +1,19 @@
+{
+  "scenario": "point",
+  "duration_s": 59.99500000001224,
+  "samples": 12000,
+  "final_error_m": 0.014436604386388099,
+  "rms_error_m": 0.01308851825467417,
+  "p95_error_m": 0.02784777103265442,
+  "max_error_m": 0.04480691609502278,
+  "max_speed_m_s": 0.22597751525271775,
+  "max_pitch_deg": 0.8641834467519347,
+  "max_wall_normal_drift_m": 2.1307955400118317e-13,
+  "max_roll_yaw_deg": 9.31624926593715e-12,
+  "min_tension_N": 1.1380535591350995,
+  "max_tension_N": 1.500362037273784,
+  "slack_fraction": 0.0,
+  "p95_solve_time_ms": 31.668500014347956,
+  "max_solve_time_ms": 113.77090000314638,
+  "deadline_miss_fraction": 0.0013333333333333333
+}

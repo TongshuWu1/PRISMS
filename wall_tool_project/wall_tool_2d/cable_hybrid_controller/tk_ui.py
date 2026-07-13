@@ -66,7 +66,7 @@ class TkWallToolApp:
 
         self.metric_vars = {
             "tracking": tk.StringVar(value="0.000 m"),
-            "contact": tk.StringVar(value="off"),
+            "gimbal": tk.StringVar(value="0 / 0 deg"),
             "support": tk.StringVar(value="0%"),
             "speed": tk.StringVar(value="0.00 m/s"),
             "power": tk.StringVar(value="0%"),
@@ -78,7 +78,7 @@ class TkWallToolApp:
             metrics.columnconfigure(col, weight=1)
         metric_specs = (
             ("Tracking", "tracking"),
-            ("Contact", "contact"),
+            ("Gimbal Angles", "gimbal"),
             ("Cable Support", "support"),
             ("Speed", "speed"),
             ("Motor Power", "power"),
@@ -150,15 +150,18 @@ class TkWallToolApp:
         params = self.sim.params
         weight = max(params.total_mass * params.gravity, 1e-9)
         speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
-        no_cable_each = weight / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9)
+        no_cable_each = weight / 2.0
         no_cable_power = max(2.0 * no_cable_each**1.5, 1e-9)
         power = (state.left_thrust**1.5 + state.right_thrust**1.5) / no_cable_power
         support = state.cable_vertical_force / weight
-        contact = f"{state.contact_force:.2f} N" if state.contact_valid else ("bad" if state.work_mode else "off")
+        gimbal = (
+            f"{math.degrees(state.left_gimbal_angle):+.1f} / "
+            f"{math.degrees(state.right_gimbal_angle):+.1f} deg"
+        )
         energy_text = f"{1000.0 * state.swing_energy_J:.3f} mJ" if state.swing_energy_J < 0.001 else f"{state.swing_energy_J:.4f} J"
 
         self.metric_vars["tracking"].set(f"{state.tool_error:.3f} m")
-        self.metric_vars["contact"].set(contact)
+        self.metric_vars["gimbal"].set(gimbal)
         self.metric_vars["support"].set(f"{100.0 * support:.0f}%")
         self.metric_vars["speed"].set(f"{speed:.2f} m/s")
         self.metric_vars["power"].set(f"{100.0 * power:.0f}%")
@@ -210,7 +213,7 @@ class TkWallToolApp:
         a = transform.world((params.contact_work_x_min, params.contact_work_z_max))
         b = transform.world((params.contact_work_x_max, params.contact_work_z_min))
         canvas.create_rectangle(*a, *b, outline="#2f855a", width=2)
-        canvas.create_text(a[0] + 4, a[1] - 12, text="cleaning bay", anchor="w", fill="#2f855a", font=("Segoe UI", 10, "bold"))
+        canvas.create_text(a[0] + 4, a[1] - 12, text="inspection bay", anchor="w", fill="#2f855a", font=("Segoe UI", 10, "bold"))
 
     def _draw_paths(self, canvas: tk.Canvas, transform: "SceneTransform") -> None:
         if self.show_trace and len(self.sim.history) >= 2:
@@ -248,7 +251,12 @@ class TkWallToolApp:
         canvas.create_oval(target_xy[0] - 8, target_xy[1] - 8, target_xy[0] + 8, target_xy[1] + 8, outline="#8a5b22", width=2)
 
         if self.show_forces:
-            left_axis, right_axis = integrated_motor_axes(params, state.attitude)
+            left_axis, right_axis = integrated_motor_axes(
+                params,
+                state.attitude,
+                state.left_gimbal_angle,
+                state.right_gimbal_angle,
+            )
             self._draw_arrow(canvas, left_xy, left_axis, 18 + 26 * state.left_thrust / max(params.max_thrust_per_drone, 1e-9), "#2563a8")
             self._draw_arrow(canvas, right_xy, right_axis, 18 + 26 * state.right_thrust / max(params.max_thrust_per_drone, 1e-9), "#2563a8")
             cable_dir = (params.anchor[0] - state.payload[0], params.anchor[1] - state.payload[1])
@@ -279,7 +287,12 @@ class TkWallToolApp:
             outline="#5c4512",
             width=2,
         )
-        left_axis, right_axis = integrated_motor_axes(params, state.attitude)
+        left_axis, right_axis = integrated_motor_axes(
+            params,
+            state.attitude,
+            state.left_gimbal_angle,
+            state.right_gimbal_angle,
+        )
         for center, axis in ((left_center, left_axis), (right_center, right_axis)):
             angle = math.atan2(axis[1], axis[0])
             self._draw_world_polygon(
@@ -388,7 +401,7 @@ class TkWallToolApp:
             (
                 ("tracking", "#111111", lambda s: s.tool_error / max(self.sim.params.work_contact_tracking_limit_m, 1e-9)),
                 ("speed", "#2563a8", lambda s: math.hypot(s.payload_velocity[0], s.payload_velocity[1]) / max(self.sim.params.work_contact_speed_limit_mps, 1e-9)),
-                ("valid", "#2f855a", lambda s: 1.0 if s.contact_valid else 0.0),
+                ("valid", "#2f855a", lambda s: 1.0 if s.inspection_valid else 0.0),
             ),
         )
         self._draw_plot(

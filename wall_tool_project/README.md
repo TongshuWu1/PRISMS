@@ -6,7 +6,7 @@ The project is split into two layers:
 
 ```text
 wall_tool_2d/
-  cable_hybrid_controller/    validated 2D NMPC controller, diagnostics, UI
+  cable_hybrid_controller/    sensor-cascade controller, diagnostics, optional NMPC
   wall_tool_sim/              2.5D wall-plane simulator and geometry helpers
 
 wall_tool_3d/
@@ -77,7 +77,7 @@ For a batch smoke test without the controller board:
 ```
 
 The 3D batch runner reports realtime factor and fails below
-`--min-realtime-factor 0.5` by default. The interactive CoppeliaSim bridge uses
+`--min-realtime-factor 0.45` by default. The interactive CoppeliaSim bridge uses
 100 Hz plant/controller stepping and refreshes visual-only cable/prop geometry
 at 10 Hz so the segmented steel cable does not dominate the remote API loop.
 The desired drawing path is rendered in CoppeliaSim by default as a blue path
@@ -97,10 +97,12 @@ wall_tool_3d/scene/wall_tool_pen_scene.ttt
 wall_tool_3d/scene/wall_tool_payload_model.ttm
 ```
 
-The dynamic mode reuses the 2D NMPC as the command source, but it syncs
-position, velocity, pitch, reel length, and tension from the CoppeliaSim body
-before each solve. The bridge also uses measured 3D wall-contact force for
-ink/contact validity.
+The dynamic mode reuses the 2D sensor cascade as the command source. By default it
+simulates a reel encoder, cable-angle encoder, load cell, and payload IMU, then
+reconstructs position, velocity, pitch, reel length, and tension before each
+control update. Exact CoppeliaSim state remains available through
+`--feedback-mode ground-truth` for estimator comparison. The bridge also uses
+measured 3D wall-contact force for ink/contact validity.
 
 ## Active Model
 
@@ -109,7 +111,16 @@ The current robot is one integrated rectangular-cage wall-tool payload with:
 - two fixed side motors canted about 35 degrees from vertical,
 - a top cable mount connected to an anchor/reel,
 - a pen/toolhead at the wall face,
-- 2D controller state `x = [p_x, p_z, v_x, v_z, phi, omega, l]^T`,
-- command `u = [F_L, F_R, T, ldot_cmd]^T`.
+- sensor-cascade state estimate `[p_x, p_z, v_x, v_z, phi, omega, l, ldot, T]`,
+- hardware command `[F_L_cmd, F_R_cmd, ldot_cmd]`.
 
-The selected control law is `tool_head_nmpc`.
+Passive wall rollers constrain payload pitch. The outer loop therefore
+allocates desired wall-plane force across the two side motors at a fixed smooth
+cable-tension setpoint. A load-cell PI loop then
+turns that setpoint into reel velocity, and the reel encoder closes the motor
+velocity loop. Cable tension remains a measured physical state, not a direct
+actuator command.
+
+The selected control law is `sensor_cascade`. The experimental
+`tool_head_nmpc` implementation remains available for offline comparison, but
+an iteration-limited nonlinear solve is rejected and handed to the cascade.

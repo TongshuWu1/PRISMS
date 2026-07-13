@@ -154,7 +154,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.metric_captions: dict[str, QtWidgets.QLabel] = {}
         metric_specs = (
             ("tracking", "Tracking Error", "#111111"),
-            ("contact", "Contact Force", "#2f855a"),
+            ("gimbal", "Gimbal Angles", "#2f855a"),
             ("tension", "Cable Tension", "#2f855a"),
             ("speed", "Tool Speed", "#2563a8"),
             ("thrust", "Motor Thrust", "#6b46c1"),
@@ -206,7 +206,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             ("Right motor", "right_input"),
             ("Desired force", "desired_force"),
             ("MPC solve", "mpc_solve"),
-            ("MPC status", "mpc_status"),
+            ("Controller status", "mpc_status"),
         )
         for index, (caption_text, key) in enumerate(telemetry_specs):
             row = index // 2
@@ -296,7 +296,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             alpha=0.35,
         )
         self.ax.add_patch(self.work_region_patch)
-        self.ax.text(params.contact_work_x_min, params.contact_work_z_max + 0.06, "cleaning bay", color="#2f855a", fontsize=9)
+        self.ax.text(params.contact_work_x_min, params.contact_work_z_max + 0.06, "inspection bay", color="#2f855a", fontsize=9)
         self.spool = Circle(params.anchor, 0.075, facecolor="#444444", edgecolor="black", zorder=5)
         self.ax.add_patch(self.spool)
         self.ax.text(params.anchor[0], params.anchor[1] + 0.13, "anchor + spool", ha="center", fontsize=9)
@@ -359,7 +359,7 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.measured_tension_curve = self.cable_plot.plot(pen=pg.mkPen("#2f855a", width=2), name="measured tension")
         self.desired_tension_curve = self.cable_plot.plot(
             pen=pg.mkPen("#111111", width=1, style=QtCore.Qt.PenStyle.DashLine),
-            name="desired tension",
+            name="predicted tension",
         )
         self.cable_vertical_curve = self.cable_plot.plot(pen=pg.mkPen("#6b46c1", width=2), name="vertical support")
 
@@ -440,7 +440,10 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         state = self.sim.history[-1]
         speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
         self.metric_labels["tracking"].setText(f"{state.tool_error:.3f} m")
-        self.metric_labels["contact"].setText(f"{state.contact_force:.2f} N")
+        self.metric_labels["gimbal"].setText(
+            f"{math.degrees(state.left_gimbal_angle):+.1f} / "
+            f"{math.degrees(state.right_gimbal_angle):+.1f} deg"
+        )
         self.metric_labels["tension"].setText(f"{state.measured_tension:.2f} N")
         self.metric_labels["speed"].setText(f"{speed:.2f} m/s")
         self.metric_labels["thrust"].setText(f"{state.left_thrust:.2f} / {state.right_thrust:.2f} N")
@@ -515,7 +518,14 @@ class QtEvalWindow(QtWidgets.QMainWindow):
             [left_center[0], state.payload[0], right_center[0]],
             [left_center[1], state.payload[1], right_center[1]],
         )
-        self.tool_artist.update(state.payload, state.attitude, left_center, right_center)
+        self.tool_artist.update(
+            state.payload,
+            state.attitude,
+            state.left_gimbal_angle,
+            state.right_gimbal_angle,
+            left_center,
+            right_center,
+        )
         self.reference_point.set_data([], [])
         self.target_point.set_data([state.target[0]], [state.target[1]])
         self.tool_point.set_data([state.tool_head[0]], [state.tool_head[1]])
@@ -523,7 +533,8 @@ class QtEvalWindow(QtWidgets.QMainWindow):
         self.reference_label.set_position((state.reference[0] + 0.05, state.reference[1] + 0.05))
         self.status_box.set_text(
             f"tracking {state.tool_error:.3f} m\n"
-            f"contact {state.contact_force:.2f} N\n"
+            f"gimbals {math.degrees(state.left_gimbal_angle):+.1f} / "
+            f"{math.degrees(state.right_gimbal_angle):+.1f} deg\n"
             f"tension {state.measured_tension:.2f} N\n"
             f"mpc {1000.0 * state.mpc_solve_time_s:.1f} ms"
         )
@@ -536,7 +547,11 @@ class QtEvalWindow(QtWidgets.QMainWindow):
 
     def _update_force_arrows(self, state: SimState, left_center: Vec2, right_center: Vec2) -> None:
         params = self.sim.params
-        left_axis, right_axis = self.sim._drone_axes(state.attitude)
+        left_axis, right_axis = self.sim._drone_axes(
+            state.attitude,
+            state.left_gimbal_angle,
+            state.right_gimbal_angle,
+        )
         left_end = add2(left_center, scale2(left_axis, 0.05 + 0.26 * state.left_thrust / max(params.max_thrust_per_drone, 1e-9)))
         right_end = add2(right_center, scale2(right_axis, 0.05 + 0.26 * state.right_thrust / max(params.max_thrust_per_drone, 1e-9)))
         cable_dir = normalize2((params.anchor[0] - state.payload[0], params.anchor[1] - state.payload[1]))

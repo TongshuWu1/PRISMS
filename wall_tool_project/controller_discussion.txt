@@ -32,14 +32,15 @@ Active Files
     Builds SimParams from facade defaults plus config.py overrides.
 
   wall_tool_2d/cable_hybrid_controller/mpc/model.py
-    NMPC data contracts.
+    NMPC data contracts for the actuator-realistic state and command vectors.
 
   wall_tool_2d/cable_hybrid_controller/mpc/solver.py
-    CasADi/IPOPT nonlinear MPC solver.
+    CasADi/IPOPT nonlinear MPC solver. Uses direct single shooting, actuator
+    states, compliant cable tension prediction, and bounded command interfaces.
 
   wall_tool_2d/wall_tool_sim/wall_tool_ui.py
-    2.5D simulator, trajectory sampling, active tool_head_nmpc plant branch,
-    and inextensible steel-cable logic.
+    2.5D simulator, trajectory sampling, active sensor cascade, bounded wrench
+    allocation, load-cell reel loop, external-plant mode, and NMPC fallback.
 
   wall_tool_2d/cable_hybrid_controller/qt_eval_ui.py
     Preferred live UI with scene, telemetry, evaluation plots, and the chosen
@@ -48,55 +49,61 @@ Active Files
 Active Controller
 -----------------
 The selected controller is:
-  control_law = "tool_head_nmpc"
+  control_law = "sensor_cascade"
 
-The controller is a direct nonlinear MPC. It optimizes tool-head motion,
-payload tilt, cable support, side-motor thrust, and reel command over a finite
-horizon. The current physical story is one integrated wall-tool payload with
-two canted side motors; old internal drone naming remains only where it preserves
-the tuned state and command contract.
+The controller is a hardware-facing cascade. Passive wall rollers constrain
+payload pitch, so the outer loop tracks tool-head position and velocity with a
+smooth two-motor force allocator at a fixed cable-tension setpoint. The load-cell
+inner loop converts that setpoint into reel line velocity, while the reel
+encoder closes the motor velocity loop.
 
-State:
-  x = [p_x, p_z, v_x, v_z, phi, omega, l]^T
+Turn Preview
+------------
+The reference generator samples a 1.2 s / minimum 0.18 m future path horizon.
+Heading change over that interval estimates curvature. The reference speed is
+limited by the configured 0.06 m/s^2 lateral-acceleration budget, and the change
+between current and preview velocity supplies acceleration feedforward. This
+lets the force controller brake and redirect before reaching a corner.
+
+Estimated feedback:
+  yhat = [p_x, p_z, v_x, v_z, phi, omega, l, ldot, T]^T
 
 Command:
-  u = [F_L, F_R, T, ldot_cmd]^T
+  u = [F_L_cmd, F_R_cmd, ldot_cmd]^T
 
-The MPC receives the sampled desired path horizon:
-  p_des,0 ... p_des,N
-  v_des,0 ... v_des,N
+Cable tension is not an ideal force command. The allocator produces a bounded
+setpoint T_ref, and the physical reel/cable/load-cell loop realizes it.
 
-Only the direct nonlinear MPC path is kept in the active project.
+The experimental direct NMPC remains available for comparison. A nonlinear
+iterate that reaches the iteration limit is not declared successful; the
+sensor cascade is used instead.
 
 Cable Model
 -----------
-The active branch uses an inextensible unilateral steel cable:
-  ||anchor - cable_mount(p, phi)|| <= l
+The active branch uses a compliant unilateral steel cable:
+  d = ||anchor - cable_mount(p, phi)||
+  delta = d - l
+  T_spring = max(0, k delta + c delta_dot)
+  tau_T Tdot = T_spring - T
   T >= 0
 
-The cable can pull when taut, cannot push, and cannot provide more than 100%
-vertical support:
-  T * e_c,z <= m g
+The cable can pull when taut and cannot push. Reel speed and motor thrust have
+their own first-order states, so the NMPC predicts actuator lag rather than
+assuming instantaneous commands.
 
 Tilt Policy
 -----------
-Body pose is not a tracking task. Tilt is an internal optimization variable.
-The solver uses tilt only when it improves path tracking or reduces future
-motor effort, subject to the configured attitude bound.
+Pitch and pitch rate come from the payload IMU. A damped pitch command is part
+of the requested wrench, while bounded allocation trades pitch correction
+against force tracking when the underactuated geometry reaches a limit.
 
-Objective Priority
-------------------
-Hard constraints:
-  wall bounds, actuator limits, cable tension limit, cable support limit,
-  cable length bounds, slack tolerance, attitude bounds, reel speed and
-  acceleration limits, numerical stability.
-
-Primary objective:
-  minimize tool-head tracking error over the horizon.
-
-Secondary objectives:
-  smooth velocity tracking, low motor effort, useful cable support, smooth reel
-  command, smooth input changes, small angular rate, and no unnecessary tilt.
+Control Priority
+----------------
+  1. Track x-z position/velocity within the acceleration limit.
+  2. Constrain pitch mechanically with passive wall rollers.
+  3. Regulate cable tension to 0.45 N without slack.
+  4. Respect 92% thrust reserve and the 0.10 m/s operational reel limit.
+  5. Prevent load-cell integral windup while a bound is active.
 
 Current Tuning
 --------------
@@ -104,11 +111,11 @@ Tune only through:
   wall_tool_2d/cable_hybrid_controller/config.py
 
 Important values:
-  BEST_PATH_SPEED = 0.16
+  BEST_PATH_SPEED = 0.12
   COVERAGE_CORNER_SPEED = 0.040
-  mpc_horizon_steps = 15
-  mpc_horizon_dt = 0.120
-  mpc_control_period_s = 0.040
+  mpc_horizon_steps = 12
+  mpc_horizon_dt = 0.040
+  mpc_control_period_s = 0.150
   mpc_attitude_limit_rad = 1.05
   mpc_slack_limit_m = 0.012
   mpc_tracking_position_weight = 260.0
@@ -122,9 +129,9 @@ Important values:
   mpc_attitude_rate_weight = 0.45
   mpc_attitude_weight = 0.025
   mpc_slack_weight = 180.0
-  mpc_solver_max_iter = 80
+  mpc_solver_max_iter = 25
   mpc_solver_tolerance = 1e-5
-  max_cable_support_fraction = 1.0
+  mpc_thrust_command_fraction = 0.92
   max_spool_speed = derived from 251 RPM output speed and 22 mm spool radius
   reel_velocity_slew_limit_mps2 = internal velocity-command slew derived from the 12 V reel gearmotor response
   rotational_damping = 0.090
@@ -144,16 +151,48 @@ The Qt UI shows:
   desired path state,
   left and right drone inputs,
   desired force,
-  MPC solve time and status.
+  controller status and timing.
+
+CoppeliaSim Sensor Feedback
+---------------------------
+The 3D runner defaults to:
+  --feedback-mode sensor
+
+That mode does not feed exact CoppeliaSim position or velocity to the controller.
+It simulates the intended hardware measurements:
+  reel motor encoder -> paid-out cable length and reel speed,
+  cable-angle encoder -> cable angle at the top guide,
+  load cell -> cable tension,
+  payload IMU -> raw angular rate and specific force.
+
+The estimator reconstructs the cable-mount position from cable length and
+angle, corrects elastic stretch using load-cell tension and cable stiffness,
+removes the attitude-dependent cable-mount offset, estimates attitude from raw
+gyro/accelerometer measurements including gyro bias, and fuses differentiated
+geometry with gravity-compensated IMU acceleration for payload velocity.
+
+External Plant and Safety
+-------------------------
+The CoppeliaSim path asks the controller only for commands. The controller does
+not integrate its internal 2D plant and the 3D plant no longer applies reel lag
+for a second time. If a nonlinear solve is infeasible or numerically unusable,
+the same bounded sensor cascade supplies thrust allocation and load-cell reel
+control instead of holding a stale command indefinitely.
+
+The wall-normal preload and roll/yaw restraint are explicit passive mechanical
+guide assumptions. They are not presented as feedback from sensors that do not
+exist in the proposed hardware list.
+
+Use --feedback-mode ground-truth only as an estimator comparison baseline.
 
 Generated Data
 --------------
 Generated output folders are intentionally not kept in this cleaned checkout.
-Run `--mode log` to create fresh reports for the current NMPC controller.
+Run `--mode log` to create fresh reports for the current sensor cascade.
 
 Next Work
 ---------
 1. Tune only through wall_tool_2d/cable_hybrid_controller/config.py.
-2. Inspect solve time distribution during longer coverage paths.
-3. If solve time is too high, reduce horizon or move from IPOPT to a faster
-   real-time NMPC backend after the formulation is validated.
+2. Validate longer coverage paths under wind/contact disturbances.
+3. Re-enable the optional NMPC only after it converges within the real-time
+   budget and outperforms the sensor-cascade baseline in long tests.

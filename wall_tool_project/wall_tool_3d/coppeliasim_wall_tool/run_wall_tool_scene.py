@@ -75,18 +75,29 @@ def focus_matplotlib_window(fig, title: str) -> None:
     except Exception:
         pass
 
-from cable_hybrid_controller.controller import BEST_PLANNER, make_simulator  # noqa: E402
+from cable_hybrid_controller.controller import (  # noqa: E402
+    BEST_PLANNER,
+    COVERAGE_CORNER_SPEED,
+    make_simulator,
+)
 from coppeliasim_wall_tool import generate_wall_tool_scene as scene_gen  # noqa: E402
 from coppeliasim_wall_tool import sim_utils  # noqa: E402
+from coppeliasim_wall_tool.sensor_estimator import (  # noqa: E402
+    EstimatedWallToolState,
+    SensorConfig,
+    SensorTruth,
+    WallToolSensorPipeline,
+)
 from wall_tool_sim.reel_motor import ReelMotorSpec  # noqa: E402
 from wall_tool_sim.steel_cable import SteelCableSpec  # noqa: E402
 from wall_tool_sim.wall_tool_ui import integrated_motor_center_offsets  # noqa: E402
 
 
 PLANT_MODES = ("dynamic",)
+FEEDBACK_MODES = ("sensor", "ground-truth")
 COPPELIASIM_DEFAULT_TIME_STEP_S = 0.010
 DEFAULT_VISUAL_UPDATE_PERIOD_S = 0.100
-DEFAULT_REALTIME_FACTOR_FLOOR = 0.50
+DEFAULT_REALTIME_FACTOR_FLOOR = 0.45
 DEFAULT_DESIRED_PATH_UPDATE_PERIOD_S = 0.250
 DEFAULT_DESIRED_PATH_MAX_SEGMENTS = 24
 DEFAULT_DESIRED_PATH_RADIUS_M = 0.006
@@ -123,8 +134,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coppeliasim-exe", type=Path, default=sim_utils.DEFAULT_COPPELIASIM_EXE)
     parser.add_argument("--duration", type=float, default=0.0, help="Simulation duration [s]. Default 0 keeps the 2D UI running.")
     parser.add_argument("--plant-mode", choices=PLANT_MODES, default="dynamic")
+    parser.add_argument(
+        "--feedback-mode",
+        choices=FEEDBACK_MODES,
+        default="sensor",
+        help="Use the proposed encoders/load-cell/IMU estimator, or exact CoppeliaSim state for comparison.",
+    )
+    parser.add_argument("--reel-encoder-counts-per-output-rev", type=int, default=2048)
+    parser.add_argument("--cable-angle-encoder-counts-per-rev", type=int, default=4096)
+    parser.add_argument("--sensor-noise", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--sensor-random-seed", type=int, default=7)
+    parser.add_argument("--estimator-velocity-fusion-tau", type=float, default=0.080)
     parser.add_argument("--target-x", type=float, default=0.90)
     parser.add_argument("--target-z", type=float, default=1.50)
+    parser.add_argument(
+        "--path-points",
+        default="",
+        help="Optional semicolon-separated x,z path, for example '0.8,2.0;0.8,1.3;-0.8,1.3'.",
+    )
     parser.add_argument("--standoff", type=float, default=params.normal_standoff_m)
     parser.add_argument("--wall-width", type=float, default=params.wall_width)
     parser.add_argument("--wall-height", type=float, default=params.wall_height)
@@ -163,9 +190,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wall-contact-stiffness", type=float, default=params.normal_contact_stiffness_N_m)
     parser.add_argument("--wall-contact-damping", type=float, default=params.normal_contact_damping_N_s_m)
     parser.add_argument("--wall-contact-force-limit", type=float, default=params.normal_contact_force_limit_N)
-    parser.add_argument("--wall-contact-friction", type=float, default=0.18)
+    parser.add_argument("--wall-contact-friction", type=float, default=0.020)
+    parser.add_argument("--wall-friction-transition-speed", type=float, default=0.040)
     parser.add_argument("--angular-drag-y", type=float, default=params.rotational_damping)
     parser.add_argument("--angular-drag-roll-yaw", type=float, default=0.004)
+    parser.add_argument("--guide-roll-yaw-stiffness", type=float, default=0.060)
+    parser.add_argument("--guide-pitch-stiffness", type=float, default=5.0)
+    parser.add_argument("--guide-pitch-damping", type=float, default=0.50)
     parser.add_argument("--prop-visual-update-period", type=float, default=DEFAULT_VISUAL_UPDATE_PERIOD_S)
     parser.add_argument("--cable-visual-update-period", type=float, default=DEFAULT_VISUAL_UPDATE_PERIOD_S)
     parser.add_argument("--show-desired-path", action=argparse.BooleanOptionalAction, default=True)
@@ -238,6 +269,8 @@ class DynamicPlantState:
     cable_visual_lengths: list[float] | None = None
     left_motor_speed: float = 0.0
     right_motor_speed: float = 0.0
+    last_left_thrust: float = 0.0
+    last_right_thrust: float = 0.0
     left_prop_phase: float = 0.0
     right_prop_phase: float = 0.0
     left_force_arrow_stem_length: float = scene_gen.FORCE_ARROW_INITIAL_LENGTH - scene_gen.FORCE_ARROW_HEAD_LENGTH
@@ -247,6 +280,8 @@ class DynamicPlantState:
     last_cable_visual_time: float = -1.0
     last_log_time: float = -1.0
     last_tension: float = 0.0
+    sensor_pipeline: WallToolSensorPipeline | None = None
+    last_estimate: EstimatedWallToolState | None = None
 
 
 @dataclass(frozen=True)
@@ -634,6 +669,7 @@ class EfficiencyMonitor:
     solver_failure_count: int = 0
     max_motor_rpm: float = 0.0
     max_reel_rpm: float = 0.0
+    max_abs_pitch_rad: float = 0.0
 
     def update(
         self,
@@ -648,6 +684,7 @@ class EfficiencyMonitor:
         reel_velocity_m_s: float,
         motor_speed_rad_s: Sequence[float],
         reel_rpm: float,
+        pitch_rad: float,
         mpc_solve_time_s: float,
         mpc_status: str,
         contact_valid: bool,
@@ -687,13 +724,18 @@ class EfficiencyMonitor:
         self.solver_time_integral_s2 += solve_time * dt
         self.solver_time_max_s = max(self.solver_time_max_s, solve_time)
         status = mpc_status or ""
-        if status and not (status.startswith("Solve_Succeeded") or status.startswith("Solved_To_Acceptable_Level")):
+        if status and not (
+            status.startswith("Solve_Succeeded")
+            or status.startswith("Solved_To_Acceptable_Level")
+            or status.startswith("sensor-cascade")
+        ):
             self.solver_failure_count += 1
         self.max_motor_rpm = max(
             self.max_motor_rpm,
             *(abs(float(speed)) * 60.0 / (2.0 * math.pi) for speed in motor_speed_rad_s),
         )
         self.max_reel_rpm = max(self.max_reel_rpm, abs(float(reel_rpm)))
+        self.max_abs_pitch_rad = max(self.max_abs_pitch_rad, abs(float(pitch_rad)))
 
     def summary(self) -> dict[str, float]:
         elapsed = max(self.elapsed_s, 1e-9)
@@ -718,6 +760,7 @@ class EfficiencyMonitor:
             "solver_failure_count": float(self.solver_failure_count),
             "max_motor_rpm": self.max_motor_rpm,
             "max_reel_rpm": self.max_reel_rpm,
+            "max_abs_pitch_rad": self.max_abs_pitch_rad,
         }
 
     def compact_text(self) -> str:
@@ -728,7 +771,7 @@ class EfficiencyMonitor:
             f"prop index {100.0 * data['mean_prop_power_index']:3.0f}%\n"
             f"3D reel work |E| {data['reel_abs_work_J']:5.3f}J  "
             f"sat thrust/tension {data['thrust_saturation_pct']:3.0f}%/{data['tension_saturation_pct']:3.0f}%  "
-            f"mpc {data['mean_mpc_solve_ms']:4.1f}/{data['max_mpc_solve_ms']:4.1f}ms"
+            f"solve {data['mean_mpc_solve_ms']:4.1f}/{data['max_mpc_solve_ms']:4.1f}ms"
         )
 
 
@@ -756,12 +799,20 @@ def print_efficiency_summary(efficiency: EfficiencyMonitor) -> None:
         f"  saturation time thrust/tension: "
         f"{data['thrust_saturation_pct']:.1f}% / {data['tension_saturation_pct']:.1f}%"
     )
-    print(
-        f"  NMPC solve mean/max: {data['mean_mpc_solve_ms']:.1f} / {data['max_mpc_solve_ms']:.1f} ms; "
-        f"solver failure samples: {int(data['solver_failure_count'])}"
-    )
+    if data["max_mpc_solve_ms"] <= 0.0 and data["solver_failure_count"] <= 0.0:
+        print("  controller solve: analytic cascade (no online nonlinear optimization)")
+    else:
+        print(
+            f"  NMPC solve mean/max: {data['mean_mpc_solve_ms']:.1f} / "
+            f"{data['max_mpc_solve_ms']:.1f} ms; solver failure samples: "
+            f"{int(data['solver_failure_count'])}"
+        )
     print(
         f"  peak motor/reel speed: {data['max_motor_rpm']:.0f} rpm / {data['max_reel_rpm']:.0f} rpm"
+    )
+    print(
+        f"  peak payload pitch: {data['max_abs_pitch_rad']:.4f} rad "
+        f"({math.degrees(data['max_abs_pitch_rad']):.2f} deg)"
     )
 
 
@@ -837,9 +888,29 @@ def reel_motor_spec_from_args(args: argparse.Namespace) -> ReelMotorSpec:
     )
 
 
+def sensor_config_from_args(args: argparse.Namespace) -> SensorConfig:
+    noise_enabled = bool(args.sensor_noise)
+    return SensorConfig(
+        reel_encoder_counts_per_output_rev=int(args.reel_encoder_counts_per_output_rev),
+        cable_angle_encoder_counts_per_rev=int(args.cable_angle_encoder_counts_per_rev),
+        reel_spool_radius_m=float(args.reel_spool_radius),
+        reel_encoder_noise_counts_std=0.20 if noise_enabled else 0.0,
+        cable_angle_noise_rad_std=math.radians(0.05) if noise_enabled else 0.0,
+        load_cell_noise_N_std=0.010 if noise_enabled else 0.0,
+        imu_gyro_noise_rad_s_std=math.radians(0.20) if noise_enabled else 0.0,
+        imu_accel_noise_m_s2_std=0.030 if noise_enabled else 0.0,
+        imu_gyro_bias_rad_s=math.radians(0.35) if noise_enabled else 0.0,
+        imu_accel_bias_body_x_m_s2=0.020 if noise_enabled else 0.0,
+        imu_accel_bias_body_z_m_s2=-0.015 if noise_enabled else 0.0,
+        velocity_fusion_tau_s=float(args.estimator_velocity_fusion_tau),
+        random_seed=int(args.sensor_random_seed),
+    )
+
+
 def validate_physical_args(args: argparse.Namespace) -> None:
     steel_cable_spec_from_args(args)
     reel_motor_spec_from_args(args)
+    sensor_config_from_args(args)
     if int(args.cable_segments) < 2:
         raise ValueError("--cable-segments must be at least 2")
     if float(args.time_step) <= 0.0:
@@ -870,15 +941,28 @@ def validate_physical_args(args: argparse.Namespace) -> None:
         raise ValueError("--wall-contact-force-limit must be positive")
     if float(args.wall_contact_friction) < 0.0:
         raise ValueError("--wall-contact-friction cannot be negative")
+    if float(args.wall_friction_transition_speed) <= 0.0:
+        raise ValueError("--wall-friction-transition-speed must be positive")
+    if float(args.guide_roll_yaw_stiffness) < 0.0:
+        raise ValueError("--guide-roll-yaw-stiffness cannot be negative")
+    if float(args.guide_pitch_stiffness) < 0.0:
+        raise ValueError("--guide-pitch-stiffness cannot be negative")
+    if float(args.guide_pitch_damping) < 0.0:
+        raise ValueError("--guide-pitch-damping cannot be negative")
+    if float(args.estimator_velocity_fusion_tau) < 0.0:
+        raise ValueError("--estimator-velocity-fusion-tau cannot be negative")
 
 
 def make_coppeliasim_simulator(args: argparse.Namespace):
-    simulator = make_simulator()
+    simulator = make_simulator(external_plant=True)
     requested_dt = float(args.time_step)
     if abs(simulator.params.dt - requested_dt) <= 1e-12:
         return simulator
     params_cls = simulator.params.__class__
-    return make_simulator(params_cls(**{**simulator.params.__dict__, "dt": requested_dt}))
+    return make_simulator(
+        params_cls(**{**simulator.params.__dict__, "dt": requested_dt}),
+        external_plant=True,
+    )
 
 
 def steel_cable_visual_points(
@@ -958,10 +1042,30 @@ def initialize_dynamic_body(sim, handles: SceneHandles, simulator, args: argpars
     mount = local_point_to_world(matrix, [0.0, 0.0, params.payload_hex_radius])
     anchor = [float(value) for value in sim.getObjectPosition(handles.anchor, -1)]
     cable_length = max(1e-6, norm3(sub3(mount, anchor)))
+    hover_thrust = min(
+        params.max_thrust_per_drone,
+        params.total_mass * params.gravity
+        / max(2.0 * math.cos(params.hex_face_tilt_rad), 1e-9),
+    )
+    hover_motor_speed = float(args.max_motor_speed) * math.sqrt(
+        hover_thrust / max(params.max_thrust_per_drone, 1e-9)
+    )
     plant_state = DynamicPlantState(
         reel_length=clamp(cable_length, params.min_cable_length, params.max_cable_length),
         anchor_position=anchor,
+        left_motor_speed=hover_motor_speed,
+        right_motor_speed=hover_motor_speed,
+        last_left_thrust=hover_thrust,
+        last_right_thrust=hover_thrust,
     )
+    if str(args.feedback_mode) == "sensor":
+        plant_state.sensor_pipeline = WallToolSensorPipeline(
+            sensor_config_from_args(args),
+            anchor_xz_m=(anchor[0], anchor[2]),
+            cable_mount_radius_m=params.payload_hex_radius,
+            gravity_m_s2=params.gravity,
+            steel_cable=steel_cable_spec_from_args(args),
+        )
     plant_state.cable_visual_lengths = update_steel_cable_visual(
         sim,
         handles,
@@ -984,21 +1088,54 @@ def sync_controller_from_dynamic_body(
 ) -> None:
     params = simulator.params
     body_sample = body_sample or read_dynamic_body_sample(sim, handles, plant_state)
-    position = body_sample.position
-    orientation = body_sample.orientation
-    linear_velocity = body_sample.linear_velocity
-    angular_velocity = body_sample.angular_velocity
-    xz_position = (float(position[0]), float(position[2]))
-    xz_velocity = (float(linear_velocity[0]), float(linear_velocity[2]))
+    if plant_state.sensor_pipeline is None:
+        xz_position = (float(body_sample.position[0]), float(body_sample.position[2]))
+        xz_velocity = (float(body_sample.linear_velocity[0]), float(body_sample.linear_velocity[2]))
+        attitude = coppelia_pitch_to_planar_attitude(float(body_sample.orientation[1]))
+        angular_velocity = -float(body_sample.angular_velocity[1])
+        reel_length = float(plant_state.reel_length or params.min_cable_length)
+        reel_velocity = float(plant_state.reel_velocity)
+        tension = float(plant_state.last_tension)
+    else:
+        cable_mount = local_point_to_world(
+            body_sample.matrix,
+            [0.0, 0.0, params.payload_hex_radius],
+        )
+        estimate = plant_state.sensor_pipeline.update(
+            SensorTruth(
+                timestamp_s=body_sample.sim_time,
+                reel_length_m=float(plant_state.reel_length or params.min_cable_length),
+                cable_tension_N=float(plant_state.last_tension),
+                anchor_xz_m=(float(body_sample.anchor[0]), float(body_sample.anchor[2])),
+                cable_mount_xz_m=(float(cable_mount[0]), float(cable_mount[2])),
+                payload_attitude_rad=coppelia_pitch_to_planar_attitude(float(body_sample.orientation[1])),
+                payload_angular_rate_rad_s=-float(body_sample.angular_velocity[1]),
+                payload_velocity_xz_m_s=(
+                    float(body_sample.linear_velocity[0]),
+                    float(body_sample.linear_velocity[2]),
+                ),
+            )
+        )
+        plant_state.last_estimate = estimate
+        xz_position = estimate.payload_position_xz_m
+        xz_velocity = estimate.payload_velocity_xz_m_s
+        attitude = estimate.payload_attitude_rad
+        angular_velocity = estimate.payload_angular_rate_rad_s
+        reel_length = estimate.reel_length_m
+        reel_velocity = estimate.reel_velocity_m_s
+        tension = estimate.cable_tension_N
 
     simulator.position = xz_position
     simulator.velocity = xz_velocity
-    simulator.attitude = coppelia_pitch_to_planar_attitude(float(orientation[1]))
-    simulator.angular_velocity = -float(angular_velocity[1])
-    if plant_state.reel_length is not None:
-        simulator.cable_length = clamp(plant_state.reel_length, params.min_cable_length, params.max_cable_length)
-        simulator.measured_cable_length = simulator.cable_length
-    simulator.actual_tension = clamp(plant_state.last_tension, 0.0, params.max_spool_tension)
+    simulator.attitude = attitude
+    simulator.angular_velocity = angular_velocity
+    simulator.cable_length = clamp(reel_length, params.min_cable_length, params.max_cable_length)
+    simulator.measured_cable_length = simulator.cable_length
+    simulator.actual_reel_velocity = reel_velocity
+    simulator.measured_cable_velocity = reel_velocity
+    simulator.actual_left_thrust = float(plant_state.last_left_thrust)
+    simulator.actual_right_thrust = float(plant_state.last_right_thrust)
+    simulator.actual_tension = clamp(tension, 0.0, params.max_spool_tension)
     simulator.load_cell_tension = simulator.actual_tension
     simulator.measured_tension = simulator.actual_tension
     simulator.measured_payload = xz_position
@@ -1044,6 +1181,8 @@ def apply_dynamic_wrenches(
         args,
         params.max_thrust_per_drone,
     )
+    plant_state.last_left_thrust = left_thrust
+    plant_state.last_right_thrust = right_thrust
 
     net_force = [0.0, 0.0, 0.0]
     net_torque = [0.0, 0.0, 0.0]
@@ -1118,14 +1257,15 @@ def apply_dynamic_wrenches(
     cable_weight_force = [0.0, 0.0, -cable_weight_payload_N]
     add_wrench_at_point(net_force, net_torque, cable_weight_force, mount, position)
 
-    desired_penetration = 0.0
+    desired_contact_force = 0.0
     if bool(command_state.work_mode):
-        desired_penetration = clamp(
-            float(command_state.desired_contact_force) / max(float(args.wall_contact_stiffness), 1e-9),
-            0.0,
-            0.5 * abs(float(args.standoff)),
-        )
-    desired_y = -abs(float(args.standoff)) + desired_penetration
+        desired_contact_force = max(0.0, float(command_state.desired_contact_force))
+    desired_penetration = desired_contact_force / max(float(args.wall_contact_stiffness), 1e-9)
+    guide_preload_deflection = desired_contact_force / max(float(args.normal_standoff_kp), 1e-9)
+    # This is a passive mechanical guide equilibrium, not an unmeasured y-axis
+    # feedback controller. At the desired penetration, guide preload balances
+    # the wall reaction force.
+    desired_y = -abs(float(args.standoff)) + desired_penetration + guide_preload_deflection
     net_force[1] += float(args.normal_standoff_kp) * (desired_y - position[1])
     net_force[1] -= float(args.normal_standoff_kd) * linear_velocity[1]
     pen_tip = local_point_to_world(matrix, [0.0, float(args.standoff), 0.0])
@@ -1145,9 +1285,17 @@ def apply_dynamic_wrenches(
         tangential_velocity = [float(pen_velocity[0]), 0.0, float(pen_velocity[2])]
         tangential_speed = norm3(tangential_velocity)
         if tangential_speed > 1e-6 and float(args.wall_contact_friction) > 0.0:
+            # Smooth roller/contact resistance. The tanh transition removes
+            # the discontinuous near-zero Coulomb force that caused artificial
+            # stick-slip and steady tracking bias.
+            friction_magnitude = (
+                float(args.wall_contact_friction)
+                * wall_contact_force_N
+                * math.tanh(tangential_speed / float(args.wall_friction_transition_speed))
+            )
             friction_force = scale3(
                 tangential_velocity,
-                -float(args.wall_contact_friction) * wall_contact_force_N / tangential_speed,
+                -friction_magnitude / tangential_speed,
             )
             add_wrench_at_point(net_force, net_torque, friction_force, pen_tip, position)
     net_force[0] -= float(args.linear_drag_xz) * linear_velocity[0]
@@ -1155,6 +1303,12 @@ def apply_dynamic_wrenches(
     net_torque[0] -= float(args.angular_drag_roll_yaw) * angular_velocity[0]
     net_torque[1] -= float(args.angular_drag_y) * angular_velocity[1]
     net_torque[2] -= float(args.angular_drag_roll_yaw) * angular_velocity[2]
+    net_torque[0] -= float(args.guide_roll_yaw_stiffness) * float(body_sample.orientation[0])
+    net_torque[2] -= float(args.guide_roll_yaw_stiffness) * float(body_sample.orientation[2])
+    # Passive wall rollers/guide rails constrain payload pitch. This is a
+    # mechanical spring-damper assumption, not an unmeasured active controller.
+    net_torque[1] -= float(args.guide_pitch_stiffness) * float(body_sample.orientation[1])
+    net_torque[1] -= float(args.guide_pitch_damping) * float(angular_velocity[1])
 
     if now - plant_state.last_prop_visual_time >= float(args.prop_visual_update_period):
         plant_state.left_prop_phase += plant_state.left_motor_speed * dt
@@ -1456,6 +1610,7 @@ class CoppeliaSimWallToolAdapter:
             reel_velocity_m_s=float(sample["actual_spool_velocity"]),
             motor_speed_rad_s=sample["motor_speed"],
             reel_rpm=float(sample["reel_motor_rpm"]),
+            pitch_rad=float(sample["attitude"]),
             mpc_solve_time_s=float(sensor_state.mpc_solve_time_s),
             mpc_status=str(sensor_state.mpc_status),
             contact_valid=bool(sensor_state.contact_valid),
@@ -1546,11 +1701,28 @@ class CoppeliaSimWallToolAdapter:
         cable_stiffness = float(sample["cable_stiffness_N_m"]) if sample is not None else 0.0
         cable_weight = float(sample["cable_payload_weight_N"]) if sample is not None else 0.0
         reel_rpm = float(sample["reel_motor_rpm"]) if sample is not None else 0.0
+        if self.plant_state.last_estimate is None:
+            feedback_text = "feedback ground-truth CoppeliaSim state"
+        else:
+            estimate = self.plant_state.last_estimate
+            estimate_position_error = math.hypot(
+                estimate.payload_position_xz_m[0] - payload[0],
+                estimate.payload_position_xz_m[1] - payload[1],
+            )
+            estimate_velocity_error = math.hypot(
+                estimate.payload_velocity_xz_m_s[0] - payload_velocity[0],
+                estimate.payload_velocity_xz_m_s[1] - payload_velocity[1],
+            )
+            feedback_text = (
+                f"feedback sensors  est error p/v {1000.0 * estimate_position_error:4.1f}mm/"
+                f"{estimate_velocity_error:4.2f}m/s  cable angle {math.degrees(estimate.cable_angle_rad):+5.1f}deg"
+            )
         self.sensor_text = (
             f"3D sensors line {line_length:4.2f}m  reel {reel_length:4.2f}m  stretch {1000.0 * cable_extension:5.1f}mm\n"
             f"3D steel cable k {cable_stiffness:6.0f}N/m  carried weight {cable_weight:4.2f}N  slack {cable_slack}\n"
             f"3D pose y {position[1]:+.3f}m  pen_y {float(pen_position[1]):+.3f}m  contact {wall_contact_force:4.2f}N\n"
             f"3D motors rpm L/R {rpm_l:5.0f}/{rpm_r:5.0f}  reel {reel_rpm:+5.0f}\n"
+            f"{feedback_text}\n"
             f"{self.efficiency.compact_text()}"
         )
 
@@ -1697,8 +1869,19 @@ class AsyncCoppeliaSimUiRunner:
 
 def run_dynamic_demo(client, sim, args: argparse.Namespace) -> None:
     simulator = make_coppeliasim_simulator(args)
-    active_target = [float(args.target_x), float(args.target_z)]
-    simulator.set_target((active_target[0], active_target[1]), planner=BEST_PLANNER)
+    path_points: list[tuple[float, float]] = []
+    if str(args.path_points).strip():
+        for encoded_point in str(args.path_points).split(";"):
+            coordinates = [part.strip() for part in encoded_point.split(",")]
+            if len(coordinates) != 2:
+                raise ValueError("--path-points entries must use x,z pairs separated by semicolons")
+            path_points.append((float(coordinates[0]), float(coordinates[1])))
+    if path_points:
+        simulator.set_corner_smooth_path(path_points, corner_speed=COVERAGE_CORNER_SPEED)
+        active_target = [path_points[-1][0], path_points[-1][1]]
+    else:
+        active_target = [float(args.target_x), float(args.target_z)]
+        simulator.set_target((active_target[0], active_target[1]), planner=BEST_PLANNER)
 
     if args.regenerate_scene:
         gen_args = generator_args(args, simulator)
@@ -1724,6 +1907,16 @@ def run_dynamic_demo(client, sim, args: argparse.Namespace) -> None:
     print("Starting dynamic CoppeliaSim wall-tool plant:")
     steel_cable = steel_cable_spec_from_args(args)
     reel_motor = reel_motor_spec_from_args(args)
+    sensor_config = sensor_config_from_args(args)
+    if str(args.feedback_mode) == "sensor":
+        print(
+            "  feedback: reel encoder + cable-angle encoder + load cell + payload IMU estimator "
+            f"(reel {sensor_config.reel_encoder_counts_per_output_rev} count/rev, "
+            f"angle {sensor_config.cable_angle_encoder_counts_per_rev} count/rev, "
+            f"noise={bool(args.sensor_noise)})"
+        )
+    else:
+        print("  feedback: exact CoppeliaSim position/velocity state (comparison mode)")
     print(
         f"  steel cable: diameter={1000.0 * steel_cable.diameter_m:.2f} mm, "
         f"mass/length={1000.0 * steel_cable.mass_per_length_kg_m:.1f} g/m, "
@@ -1874,6 +2067,7 @@ def run_dynamic_demo(client, sim, args: argparse.Namespace) -> None:
                 reel_velocity_m_s=float(sample["actual_spool_velocity"]),
                 motor_speed_rad_s=sample["motor_speed"],
                 reel_rpm=float(sample["reel_motor_rpm"]),
+                pitch_rad=float(sample["attitude"]),
                 mpc_solve_time_s=float(command_state.mpc_solve_time_s),
                 mpc_status=str(command_state.mpc_status),
                 contact_valid=bool(measured_contact),
@@ -1894,12 +2088,28 @@ def run_dynamic_demo(client, sim, args: argparse.Namespace) -> None:
                 rpm = [float(value) * 60.0 / (2.0 * math.pi) for value in omega]
                 pos = sample["position"]
                 reel_rpm = float(sample["reel_motor_rpm"])
+                estimator_log = ""
+                if plant_state.last_estimate is not None:
+                    estimate = plant_state.last_estimate
+                    estimate_error = math.hypot(
+                        estimate.payload_position_xz_m[0] - float(pos[0]),
+                        estimate.payload_position_xz_m[1] - float(pos[2]),
+                    )
+                    estimator_log = f" est_err={1000.0 * estimate_error:.1f}mm"
+                mpc_status = str(command_state.mpc_status)
+                if "safety fallback active" in mpc_status:
+                    mpc_log = "fallback"
+                elif mpc_status.startswith("Feasible_Limited"):
+                    mpc_log = "feasible-limited"
+                else:
+                    mpc_log = mpc_status.split(":", 1)[0] or "unknown"
                 print(
                     f"t={float(sample['time']):5.2f}s "
                     f"xz=[{float(pos[0]): .2f},{float(pos[2]): .2f}]m "
+                    f"pitch={math.degrees(float(sample['attitude'])):+.2f}deg "
                     f"T={float(sample['tension']):.2f}N "
                     f"rpm=[{rpm[0]:.0f},{rpm[1]:.0f}] "
-                    f"reel={reel_rpm:+.0f}rpm"
+                    f"reel={reel_rpm:+.0f}rpm{estimator_log} mpc={mpc_log}"
                 )
                 plant_state.last_log_time = float(sample["time"])
             client.step()

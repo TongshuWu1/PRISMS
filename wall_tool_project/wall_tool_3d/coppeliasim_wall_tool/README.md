@@ -2,8 +2,10 @@
 
 This package creates the 3D CoppeliaSim version of the PRISMS wall-inspection
 tool. The default run mode is dynamic: CoppeliaSim owns the payload motion while
-the existing 2D NMPC supplies side-motor thrust, desired cable tension, and reel
-velocity commands.
+the shared sensor-cascade supplies side-motor thrust and reel-velocity commands;
+cable tension is regulated from the measured load-cell signal rather than
+applied as an ideal force command. Controller feedback comes through a hardware-like sensor
+estimator rather than exact CoppeliaSim position and velocity.
 
 ## Run
 
@@ -23,11 +25,29 @@ The default run mode is:
 .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --plant-mode dynamic
 ```
 
+The default `--feedback-mode sensor` simulates the proposed real sensor suite:
+
+- reel motor encoder for paid-out cable length and reel speed,
+- absolute cable-angle encoder at the top guide,
+- inline reel/load-cell cable tension,
+- raw payload IMU angular rate and specific force. Attitude is reconstructed
+  with gyro integration, accelerometer correction, and gyro-bias estimation.
+
+For estimator comparison, exact simulator state remains available explicitly:
+
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --feedback-mode ground-truth
+```
+
+Encoder resolution and sensor-noise experiments can be changed without editing
+code using `--reel-encoder-counts-per-output-rev`,
+`--cable-angle-encoder-counts-per-rev`, and `--no-sensor-noise`.
+
 This opens the native 2D wall-tool UI as a controller/spectator by default.
 Click the wall, use append mode, or draw a path in that same 2D UI to send
 targets to the live CoppeliaSim plant. The UI plots actual 3D pen error and
 cable tension, and shows payload position, pen position, motor thrust, RPM,
-controller mode, MPC status, and a CoppeliaSim sensor block. The default
+controller mode, controller status, and a CoppeliaSim sensor block. The default
 command is open-ended; close the UI or press Ctrl+C to stop.
 
 Useful variants:
@@ -36,8 +56,14 @@ Useful variants:
 .\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --no-control-ui --duration 2
 ```
 
+Batch multi-corner paths can be exercised directly with:
+
+```powershell
+.\.venv\Scripts\python.exe wall_tool_project\run_wall_tool_coppeliasim.py --no-control-ui --duration 55 --path-points "0.8,2.0;0.8,1.3;-0.8,1.3;-0.8,2.0;0.0,2.0"
+```
+
 Batch runs print a loop realtime factor and fail if it drops below the default
-`--min-realtime-factor 0.5`. The default CoppeliaSim/controller step is 100 Hz
+`--min-realtime-factor 0.45`. The default CoppeliaSim/controller step is 100 Hz
 (`--time-step 0.01`), while visual-only cable and propeller geometry refreshes
 at 10 Hz (`--cable-visual-update-period 0.1`,
 `--prop-visual-update-period 0.1`) so rendering does not throttle the plant.
@@ -118,12 +144,20 @@ The 3D plant currently includes:
 - orange arrows visualize the live motor force vectors,
 - motor angular speed drives the propeller spin joints,
 - a wall-normal guide and pen-tip contact model provide measured 3D wall contact.
+- wall-normal preload and roll/yaw restraint are modeled as passive mechanical
+  guide stiffness/damping, not as feedback from an unavailable position sensor.
+- passive wall rollers strongly constrain pitch with a spring-damper guide;
+  low wall resistance uses a smooth roller-friction law instead of discontinuous
+  Coulomb stick-slip.
 - physics/control and visual rendering are decoupled: cable tension is updated
   every plant step, but the segmented cable cylinders are refreshed at the
   configured visual cadence.
 - terminal and live UI telemetry report controller efficiency: tracking error,
   thrust utilization, prop power index, reel mechanical work, saturation time,
-  NMPC solve timing, and peak motor/reel speeds.
+  controller timing, and peak motor/reel speeds.
 
-The next controller step is replacing the adapted 2D state sync with a native
-3D estimator/controller interface.
+The estimator interface is isolated in `sensor_estimator.py`, so the simulated
+sensor producers can later be replaced by real encoder, load-cell, and IMU
+drivers without changing the controller interface. Wall-normal contact and the
+remaining 3D attitude axes are still explicit passive plant assumptions rather
+than measurements in the current sensor list.

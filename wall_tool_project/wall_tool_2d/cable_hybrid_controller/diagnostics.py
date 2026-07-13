@@ -25,11 +25,11 @@ from cable_hybrid_controller.controller import (  # noqa: E402
 from cable_hybrid_controller.facade import (  # noqa: E402
     FacadeMission,
     blur_risk,
-    contact_quality,
     coverage_fraction,
     facade_safety_margin,
     in_work_region,
-    valid_work_contact,
+    inspection_quality,
+    valid_inspection_sample,
 )
 from wall_tool_sim.wall_tool_ui import SimParams, SimState  # noqa: E402
 
@@ -42,7 +42,7 @@ def session_output_dir(base_dir: Path | None = None) -> Path:
 
 def no_cable_hover_power_index(params: SimParams) -> float:
     weight = params.total_mass * params.gravity
-    no_cable_hover_each = weight / (2.0 * math.cos(params.hex_face_tilt_rad))
+    no_cable_hover_each = weight / 2.0
     return 2.0 * no_cable_hover_each**1.5
 
 
@@ -54,14 +54,14 @@ def state_row(state: SimState, params: SimParams, mission: FacadeMission | None 
     spool_abs_power = abs(state.spool_velocity_cmd) * state.tension
     max_thrust_fraction = max(state.left_thrust, state.right_thrust) / max(params.max_thrust_per_drone, 1e-9)
     contact_force = state.contact_force
-    quality = contact_quality(state, params, mission) if mission else 0.0
+    quality = inspection_quality(state, params, mission) if mission else 0.0
     safety_margin = facade_safety_margin(state, params)
     wind_norm = math.hypot(state.wind_force[0], state.wind_force[1])
     payload_speed = math.hypot(state.payload_velocity[0], state.payload_velocity[1])
     payload_acceleration = math.hypot(state.payload_acceleration[0], state.payload_acceleration[1])
     reference_acceleration = math.hypot(state.reference_acceleration[0], state.reference_acceleration[1])
     tracking_limit = mission.max_tracking_error_m if mission else params.work_contact_tracking_limit_m
-    speed_limit = mission.max_cleaning_speed_m_s if mission else params.work_contact_speed_limit_mps
+    speed_limit = mission.max_inspection_speed_m_s if mission else params.work_contact_speed_limit_mps
     angular_rate_limit = mission.max_angular_rate_rad_s if mission else params.work_contact_angular_rate_limit_rad_s
     cable_efficiency = max(0.0, math.cos(state.theta))
     return {
@@ -98,6 +98,15 @@ def state_row(state: SimState, params: SimParams, mission: FacadeMission | None 
         "spool_velocity_cmd_m_s": state.spool_velocity_cmd,
         "left_thrust_N": state.left_thrust,
         "right_thrust_N": state.right_thrust,
+        "left_gimbal_angle_rad": state.left_gimbal_angle,
+        "right_gimbal_angle_rad": state.right_gimbal_angle,
+        "left_gimbal_rate_rad_s": state.left_gimbal_rate,
+        "right_gimbal_rate_rad_s": state.right_gimbal_rate,
+        "left_gimbal_command_rad": state.left_gimbal_angle_command,
+        "right_gimbal_command_rad": state.right_gimbal_angle_command,
+        "max_gimbal_angle_fraction": max(
+            abs(state.left_gimbal_angle), abs(state.right_gimbal_angle)
+        ) / max(params.gimbal_max_angle_rad, 1e-9),
         "max_thrust_fraction": max_thrust_fraction,
         "cable_support_fraction": state.cable_vertical_force / max(weight, 1e-9),
         "drone_vertical_support_fraction": state.drone_vertical_force / max(weight, 1e-9),
@@ -116,9 +125,11 @@ def state_row(state: SimState, params: SimParams, mission: FacadeMission | None 
         "contact_force_N": contact_force,
         "desired_contact_force_N": state.desired_contact_force,
         "contact_quality": quality,
+        "inspection_quality": quality,
         "in_work_region": int(in_work_region(state.tool_head, mission)) if mission else 0,
         "work_mode": int(state.work_mode),
-        "contact_valid": int(valid_work_contact(state, mission)) if mission else int(state.contact_valid),
+        "contact_valid": int(valid_inspection_sample(state, mission)) if mission else 0,
+        "inspection_valid": int(valid_inspection_sample(state, mission)) if mission else 0,
         "blur_risk": blur_risk(state),
         "facade_safety_margin": safety_margin,
         "allocation_residual_N": state.allocation_residual,
@@ -135,6 +146,7 @@ def state_row(state: SimState, params: SimParams, mission: FacadeMission | None 
         "tension_saturated": int(state.cable_tension_saturated),
         "thrust_limit_active": int(max_thrust_fraction > 0.98),
         "allocation_residual_active": int(state.saturated),
+        "mpc_solve_time_s": state.mpc_solve_time_s,
     }
 
 
@@ -179,7 +191,7 @@ def segment_rows(rows: Sequence[dict[str, float | int]]) -> list[dict[str, float
         thrust = [float(row["max_thrust_fraction"]) for row in segment]
         residuals = [float(row["allocation_residual_N"]) for row in segment]
         support = [float(row["cable_support_fraction"]) for row in segment]
-        contact_valid = [float(row["contact_valid"]) for row in segment]
+        inspection_valid = [float(row["inspection_valid"]) for row in segment]
         contact_force = [float(row["contact_force_N"]) for row in segment]
         output.append(
             {
@@ -197,7 +209,7 @@ def segment_rows(rows: Sequence[dict[str, float | int]]) -> list[dict[str, float
                 "max_thrust_fraction": max(thrust),
                 "max_allocation_residual_N": max(residuals),
                 "mean_contact_force_N": _mean(contact_force),
-                "contact_valid_fraction": _mean(contact_valid),
+                "inspection_valid_fraction": _mean(inspection_valid),
                 "allocation_residual_active_fraction": _mean(
                     [float(row["allocation_residual_active"]) for row in segment]
                 ),
@@ -223,36 +235,38 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
     return ordered[index]
 
 
-def invalid_contact_reason_fractions(
+def invalid_inspection_reason_fractions(
     rows: Sequence[dict[str, float | int]],
     mission: FacadeMission | None,
 ) -> dict[str, float]:
     if not rows or mission is None:
         return {}
 
-    invalid_rows = [row for row in rows if int(row["contact_valid"]) == 0 and int(row["work_mode"]) == 1]
+    invalid_rows = [
+        row
+        for row in rows
+        if int(row["inspection_valid"]) == 0
+        and in_work_region((float(row["tool_x_m"]), float(row["tool_z_m"])), mission)
+    ]
     denominator = max(1, len(invalid_rows))
-    footprint_margin = 0.5 * mission.tool_width_m
+    footprint_margin = 0.5 * mission.sensor_footprint_m
     counts = {
         "region": 0,
-        "contact_low": 0,
-        "contact_high": 0,
         "tracking": 0,
         "speed": 0,
+        "attitude": 0,
         "angular_rate": 0,
     }
     for row in invalid_rows:
         point = (float(row["tool_x_m"]), float(row["tool_z_m"]))
         if not in_work_region(point, mission, footprint_margin):
             counts["region"] += 1
-        if float(row["contact_force_N"]) < mission.min_contact_force_N:
-            counts["contact_low"] += 1
-        if float(row["contact_force_N"]) > mission.max_contact_force_N:
-            counts["contact_high"] += 1
         if float(row["tracking_error_m"]) > mission.max_tracking_error_m:
             counts["tracking"] += 1
-        if float(row["payload_speed_m_s"]) > mission.max_cleaning_speed_m_s:
+        if float(row["payload_speed_m_s"]) > mission.max_inspection_speed_m_s:
             counts["speed"] += 1
+        if abs(float(row["body_attitude_rad"])) > mission.max_attitude_error_rad:
+            counts["attitude"] += 1
         if abs(float(row["body_rate_rad_s"])) > mission.max_angular_rate_rad_s:
             counts["angular_rate"] += 1
     return {name: count / denominator for name, count in counts.items()}
@@ -302,15 +316,20 @@ def summarize_session(
     swing_energies = [float(row["swing_energy_J"]) for row in rows]
     swing_power_abs = [abs(float(row["swing_power_W"])) for row in rows]
     clf_margins = [float(row["clf_margin_W"]) for row in rows]
-    contact = [float(row["contact_force_N"]) for row in rows]
-    contact_scores = [float(row["contact_quality"]) for row in rows]
+    inspection_scores = [float(row["inspection_quality"]) for row in rows]
     blur_scores = [float(row["blur_risk"]) for row in rows]
     safety_margins = [float(row["facade_safety_margin"]) for row in rows]
-    normal_gaps = [float(row["normal_gap_m"]) for row in rows]
-    normal_actuator = [abs(float(row["normal_actuator_force_N"])) for row in rows]
+    gimbal_angles = [
+        max(abs(float(row["left_gimbal_angle_rad"])), abs(float(row["right_gimbal_angle_rad"])))
+        for row in rows
+    ]
+    gimbal_rates = [
+        max(abs(float(row["left_gimbal_rate_rad_s"])), abs(float(row["right_gimbal_rate_rad_s"])))
+        for row in rows
+    ]
+    solve_times = [float(row["mpc_solve_time_s"]) for row in rows]
     attitudes_deg = [math.degrees(state.attitude) for state in states]
     mission = scenario.facade_mission
-    work_rows = [row for row in rows if int(row["work_mode"]) == 1]
 
     summary = {
         "scenario": scenario.name,
@@ -331,6 +350,7 @@ def summarize_session(
             "max_spool_speed_m_s": params.max_spool_speed,
             "reel_velocity_slew_limit_mps2": params.reel_velocity_slew_limit_mps2,
             "max_thrust_per_drone_N": params.max_thrust_per_drone,
+            "thrust_command_slew_limit_N_s": params.thrust_command_slew_limit_N_s,
             "max_tangential_accel": params.max_tangential_accel,
             "max_cable_support_fraction": params.max_cable_support_fraction,
             "max_spool_tension_N": params.max_spool_tension,
@@ -349,7 +369,14 @@ def summarize_session(
             "mpc_input_rate_weight": params.mpc_input_rate_weight,
             "mpc_attitude_rate_weight": params.mpc_attitude_rate_weight,
             "mpc_attitude_weight": params.mpc_attitude_weight,
+            "mpc_gimbal_angle_weight": params.mpc_gimbal_angle_weight,
+            "mpc_gimbal_rate_weight": params.mpc_gimbal_rate_weight,
+            "mpc_cable_support_weight": params.mpc_cable_support_weight,
             "mpc_slack_weight": params.mpc_slack_weight,
+            "gimbal_max_angle_rad": params.gimbal_max_angle_rad,
+            "gimbal_max_rate_rad_s": params.gimbal_max_rate_rad_s,
+            "gimbal_command_slew_limit_rad_s": params.gimbal_command_slew_limit_rad_s,
+            "desired_cable_support_fraction": params.desired_cable_support_fraction,
         },
         "duration_s": states[-1].t if states else 0.0,
         "max_duration_s": scenario.duration_s,
@@ -403,20 +430,17 @@ def summarize_session(
         "allocation_residual_active_fraction": _mean([float(row["allocation_residual_active"]) for row in rows]),
         "mean_wind_force_N": _mean(wind),
         "max_wind_force_N": max(wind),
-        "mean_contact_force_N": _mean(contact),
-        "max_contact_force_N": max(contact),
-        "min_contact_force_N": min(contact),
-        "mean_contact_quality": _mean(contact_scores),
-        "contact_valid_fraction": _mean([float(row["contact_valid"]) for row in rows]),
-        "work_mode_contact_valid_fraction": _mean([float(row["contact_valid"]) for row in work_rows])
-        if work_rows
-        else 0.0,
-        "invalid_contact_reason_fraction": invalid_contact_reason_fractions(rows, mission),
-        "work_mode_fraction": _mean([float(row["work_mode"]) for row in rows]),
-        "mean_normal_gap_m": _mean(normal_gaps),
-        "min_normal_gap_m": min(normal_gaps),
-        "max_normal_gap_m": max(normal_gaps),
-        "mean_abs_normal_actuator_force_N": _mean(normal_actuator),
+        "mean_inspection_quality": _mean(inspection_scores),
+        "inspection_valid_fraction": _mean([float(row["inspection_valid"]) for row in rows]),
+        "invalid_inspection_reason_fraction": invalid_inspection_reason_fractions(rows, mission),
+        "max_gimbal_angle_deg": math.degrees(max(gimbal_angles)),
+        "p95_gimbal_angle_deg": math.degrees(_percentile(gimbal_angles, 0.95)),
+        "max_gimbal_rate_deg_s": math.degrees(max(gimbal_rates)),
+        "p95_mpc_solve_time_ms": 1000.0 * _percentile(solve_times, 0.95),
+        "max_mpc_solve_time_ms": 1000.0 * max(solve_times),
+        "mpc_deadline_miss_fraction": _mean(
+            [1.0 if value > params.mpc_control_period_s else 0.0 for value in solve_times]
+        ),
         "mean_blur_risk": _mean(blur_scores),
         "max_blur_risk": max(blur_scores),
         "min_facade_safety_margin": min(safety_margins),
@@ -429,8 +453,9 @@ def summarize_session(
             "x_max_m": mission.x_max,
             "z_min_m": mission.z_min,
             "z_max_m": mission.z_max,
-            "tool_width_m": mission.tool_width_m,
-            "desired_contact_force_N": mission.desired_contact_force_N,
+            "sensor_footprint_m": mission.sensor_footprint_m,
+            "max_tracking_error_m": mission.max_tracking_error_m,
+            "max_inspection_speed_m_s": mission.max_inspection_speed_m_s,
         }
         summary["coverage_fraction"] = coverage_fraction(states, mission)
     return summary
@@ -485,11 +510,13 @@ def write_report(summary: dict[str, object], path: Path) -> None:
         "allocation_residual_active_fraction",
         "slack_sample_fraction",
         "coverage_fraction",
-        "contact_valid_fraction",
-        "work_mode_contact_valid_fraction",
-        "mean_contact_force_N",
-        "mean_contact_quality",
-        "mean_normal_gap_m",
+        "inspection_valid_fraction",
+        "mean_inspection_quality",
+        "max_gimbal_angle_deg",
+        "max_gimbal_rate_deg_s",
+        "p95_mpc_solve_time_ms",
+        "max_mpc_solve_time_ms",
+        "mpc_deadline_miss_fraction",
         "mean_blur_risk",
         "min_facade_safety_margin",
         "max_wind_force_N",
@@ -520,10 +547,10 @@ def write_report(summary: dict[str, object], path: Path) -> None:
                 lines.append(f"- `{name}`: `{value:.5f}`")
             else:
                 lines.append(f"- `{name}`: `{value}`")
-    invalid_reasons = summary.get("invalid_contact_reason_fraction")
+    invalid_reasons = summary.get("invalid_inspection_reason_fraction")
     if isinstance(invalid_reasons, dict) and invalid_reasons:
         lines.append("")
-        lines.append("## Invalid Contact Reasons")
+        lines.append("## Invalid Inspection Reasons")
         lines.append("")
         for name, value in invalid_reasons.items():
             if isinstance(value, float):
@@ -535,8 +562,8 @@ def write_report(summary: dict[str, object], path: Path) -> None:
     lines.append("- High thrust-limit activity means the route/control request is too aggressive.")
     lines.append("- High allocation residual activity means the requested force/torque combination is not fully feasible.")
     lines.append("- Slack or tension saturation should be treated as a controller failure mode, not a cosmetic plot issue.")
-    lines.append("- For cleaning, coverage is counted only when normal contact force, speed, attitude rate, and tracking are valid.")
-    lines.append("- Low contact quality means the tool is under-pressing, over-pressing, or outside the facade work bay.")
+    lines.append("- Inspection coverage is counted only when tracking, speed, attitude, and attitude-rate limits are valid.")
+    lines.append("- Gimbal saturation or an MPC deadline miss is a controller failure, not a plotting artifact.")
     lines.append("- Blur risk matters for inspection because images become less useful as vibration and speed rise.")
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -640,26 +667,23 @@ def plot_session(
         axes[0].axis("equal")
         axes[0].grid(True, color="#dddddd")
         axes[0].legend()
-        axes[1].plot(t, [float(row["contact_force_N"]) for row in rows], label="contact")
-        axes[1].plot(t, [float(row["desired_contact_force_N"]) for row in rows], "--", label="desired")
-        axes[1].axhline(mission.min_contact_force_N, color="#777777", linestyle="--", linewidth=1.0, label="min")
-        axes[1].axhline(mission.max_contact_force_N, color="#777777", linestyle=":", linewidth=1.0, label="max")
-        axes[1].set_title("Cleaning Contact Force")
-        axes[1].set_ylabel("force [N]")
+        axes[1].plot(t, [float(row["tracking_error_m"]) for row in rows], label="trajectory error")
+        axes[1].axhline(mission.max_tracking_error_m, color="#d95f0e", linestyle="--", label="limit")
+        axes[1].set_title("Inspection Trajectory Error")
+        axes[1].set_ylabel("error [m]")
         axes[1].grid(True, color="#dddddd")
         axes[1].legend()
-        axes[2].plot(t, [1000.0 * float(row["normal_gap_m"]) for row in rows], label="normal gap")
-        axes[2].plot(t, [float(row["normal_actuator_force_N"]) for row in rows], label="normal actuator")
-        axes[2].plot(t, [float(row["normal_wind_force_N"]) for row in rows], label="normal wind")
-        axes[2].set_title("Normal-Axis Contact Dynamics")
-        axes[2].set_ylabel("mm / N")
+        axes[2].plot(t, [math.degrees(float(row["left_gimbal_angle_rad"])) for row in rows], label="left")
+        axes[2].plot(t, [math.degrees(float(row["right_gimbal_angle_rad"])) for row in rows], label="right")
+        axes[2].set_title("Measured Vector-Thrust Angles")
+        axes[2].set_ylabel("angle [deg]")
         axes[2].grid(True, color="#dddddd")
         axes[2].legend()
-        axes[3].plot(t, [float(row["contact_quality"]) for row in rows], label="contact quality")
-        axes[3].plot(t, [float(row["contact_valid"]) for row in rows], label="valid contact")
+        axes[3].plot(t, [float(row["inspection_quality"]) for row in rows], label="inspection quality")
+        axes[3].plot(t, [float(row["inspection_valid"]) for row in rows], label="valid inspection")
         axes[3].plot(t, [float(row["blur_risk"]) for row in rows], label="blur risk")
         axes[3].plot(t, [float(row["wind_force_fraction_weight"]) for row in rows], label="wind / weight")
-        axes[3].set_title("Facade Work Quality And Disturbance")
+        axes[3].set_title("Inspection Quality And Disturbance")
         axes[3].set_xlabel("time [s]")
         axes[3].grid(True, color="#dddddd")
         axes[3].legend()
@@ -687,10 +711,10 @@ def _coverage_cells(rows: Sequence[dict[str, float | int]], mission: FacadeMissi
     cols = max(1, int(math.ceil((mission.x_max - mission.x_min) / mission.coverage_cell_m)))
     grid_rows = max(1, int(math.ceil((mission.z_max - mission.z_min) / mission.coverage_cell_m)))
     covered: set[tuple[int, int]] = set()
-    footprint_radius = 0.5 * mission.tool_width_m
+    footprint_radius = 0.5 * mission.sensor_footprint_m
     cell_radius = max(0, int(math.ceil(footprint_radius / mission.coverage_cell_m)))
     for row in rows:
-        if int(row["contact_valid"]) == 0:
+        if int(row["inspection_valid"]) == 0:
             continue
         col = int((float(row["tool_x_m"]) - mission.x_min) / mission.coverage_cell_m)
         grid_row = int((float(row["tool_z_m"]) - mission.z_min) / mission.coverage_cell_m)
@@ -715,7 +739,7 @@ def plot_controller_dashboard(
     errors = _values(rows, "tracking_error_m")
     metrics = {
         "coverage": coverage_fraction_from_rows(rows, mission),
-        "valid contact": _mean(_values(rows, "contact_valid")),
+        "valid inspection": _mean(_values(rows, "inspection_valid")),
         "cable support": _mean(_values(rows, "cable_support_fraction")),
         "1 - motor power": max(0.0, 1.0 - _mean(_values(rows, "drone_power_ratio"))),
         "thrust margin": max(0.0, 1.0 - max(_values(rows, "max_thrust_fraction"))),
@@ -724,8 +748,8 @@ def plot_controller_dashboard(
     sample = _sample_rows(rows)
 
     fig, axes = plt.subplots(2, 3, figsize=(15.0, 8.8), constrained_layout=True)
-    valid_points = [row for row in sample if int(row["contact_valid"]) == 1]
-    invalid_points = [row for row in sample if int(row["contact_valid"]) == 0]
+    valid_points = [row for row in sample if int(row["inspection_valid"]) == 1]
+    invalid_points = [row for row in sample if int(row["inspection_valid"]) == 0]
     axes[0, 0].plot(_values(sample, "ref_x_m"), _values(sample, "ref_z_m"), color="#777777", linewidth=1.0, label="reference")
     axes[0, 0].scatter(
         [float(row["tool_x_m"]) for row in valid_points],
@@ -745,7 +769,7 @@ def plot_controller_dashboard(
         rect_x = [mission.x_min, mission.x_max, mission.x_max, mission.x_min, mission.x_min]
         rect_z = [mission.z_min, mission.z_min, mission.z_max, mission.z_max, mission.z_min]
         axes[0, 0].plot(rect_x, rect_z, color="#111111", linewidth=1.2)
-    axes[0, 0].set_title("Path Colored By Valid Contact")
+    axes[0, 0].set_title("Path Colored By Inspection Validity")
     axes[0, 0].set_xlabel("x [m]")
     axes[0, 0].set_ylabel("z [m]")
     axes[0, 0].axis("equal")
@@ -773,7 +797,7 @@ def plot_controller_dashboard(
     axes[1, 0].plot(t, _values(rows, "payload_speed_ratio"), label="speed / limit")
     axes[1, 0].plot(t, _values(rows, "body_rate_ratio"), label="body rate / limit")
     axes[1, 0].axhline(1.0, color="#d95f0e", linestyle="--", linewidth=1.0)
-    axes[1, 0].set_title("Cleaning Limit Ratios")
+    axes[1, 0].set_title("Inspection Limit Ratios")
     axes[1, 0].set_xlabel("time [s]")
     axes[1, 0].grid(True, color="#dddddd")
     axes[1, 0].legend(fontsize=7)
@@ -786,11 +810,11 @@ def plot_controller_dashboard(
     axes[1, 1].grid(True, color="#dddddd")
     axes[1, 1].legend(fontsize=7)
 
-    reason_fractions = invalid_contact_reason_fractions(rows, mission)
+    reason_fractions = invalid_inspection_reason_fractions(rows, mission)
     if reason_fractions:
         axes[1, 2].bar(list(reason_fractions.keys()), list(reason_fractions.values()), color="#e45756")
         axes[1, 2].set_ylim(0.0, 1.05)
-    axes[1, 2].set_title("Invalid Contact Reason Fractions")
+    axes[1, 2].set_title("Invalid Inspection Reason Fractions")
     axes[1, 2].tick_params(axis="x", rotation=35, labelsize=7)
     axes[1, 2].grid(True, axis="y", color="#dddddd")
     fig.savefig(output_dir / "controller_dashboard.png", dpi=180)
@@ -824,12 +848,12 @@ def plot_coverage_map(rows: Sequence[dict[str, float | int]], output_dir: Path, 
         aspect="auto",
     )
     axes[0].plot(_values(sample, "tool_x_m"), _values(sample, "tool_z_m"), color="#1f1f1f", linewidth=0.8, alpha=0.72)
-    axes[0].set_title("Contact-Gated Coverage Cells")
+    axes[0].set_title("Trajectory-Quality-Gated Coverage Cells")
     axes[0].set_xlabel("x [m]")
     axes[0].set_ylabel("z [m]")
     axes[0].grid(True, color="#dddddd", linewidth=0.5)
 
-    invalid = [row for row in sample if int(row["contact_valid"]) == 0 and int(row["work_mode"]) == 1]
+    invalid = [row for row in sample if int(row["inspection_valid"]) == 0]
     axes[1].plot(_values(sample, "tool_x_m"), _values(sample, "tool_z_m"), color="#999999", linewidth=0.8)
     axes[1].scatter(
         [float(row["tool_x_m"]) for row in invalid],
@@ -838,7 +862,7 @@ def plot_coverage_map(rows: Sequence[dict[str, float | int]], output_dir: Path, 
         color="#d95f0e",
         label="invalid samples",
     )
-    axes[1].set_title("Where Valid Contact Was Lost")
+    axes[1].set_title("Where Inspection Validity Was Lost")
     axes[1].set_xlabel("x [m]")
     axes[1].set_ylabel("z [m]")
     axes[1].axis("equal")
@@ -874,12 +898,19 @@ def plot_limit_margins(
     axes[0].set_title("Task Limit Ratios")
     axes[0].legend(fontsize=8)
 
-    axes[1].plot(t, _values(rows, "contact_force_N"), label="contact force")
-    if mission:
-        axes[1].axhline(mission.min_contact_force_N, color="#777777", linestyle="--", label="min")
-        axes[1].axhline(mission.max_contact_force_N, color="#777777", linestyle=":", label="max")
-    axes[1].set_ylabel("force [N]")
-    axes[1].set_title("Contact Force Margin")
+    axes[1].plot(t, _values(rows, "max_gimbal_angle_fraction"), label="gimbal angle / limit")
+    axes[1].plot(
+        t,
+        [
+            max(abs(float(row["left_gimbal_rate_rad_s"])), abs(float(row["right_gimbal_rate_rad_s"])))
+            / max(params.gimbal_max_rate_rad_s if params else 1.0, 1e-9)
+            for row in rows
+        ],
+        label="gimbal rate / limit",
+    )
+    axes[1].axhline(1.0, color="#d95f0e", linestyle="--")
+    axes[1].set_ylabel("ratio")
+    axes[1].set_title("Gimbal Feasibility")
     axes[1].legend(fontsize=8)
 
     axes[2].plot(t, _values(rows, "max_thrust_fraction"), label="max thrust")
@@ -1033,9 +1064,9 @@ def plot_segment_scorecard(rows: Sequence[dict[str, float | int]], output_dir: P
     axes[1].plot(segment_ids, _values(segments, "max_error_m"), color="#111111", marker="o", label="max")
     axes[1].set_ylabel("error [m]")
     axes[1].legend(fontsize=8)
-    axes[2].bar(segment_ids, _values(segments, "contact_valid_fraction"), color="#54a24b")
+    axes[2].bar(segment_ids, _values(segments, "inspection_valid_fraction"), color="#54a24b")
     axes[2].set_ylim(0.0, 1.05)
-    axes[2].set_ylabel("valid contact")
+    axes[2].set_ylabel("valid inspection")
     axes[3].plot(segment_ids, _values(segments, "mean_cable_support_fraction"), marker="o", label="cable support")
     axes[3].plot(segment_ids, _values(segments, "mean_drone_power_ratio"), marker="o", label="motor power")
     axes[3].set_xlabel("segment")

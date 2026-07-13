@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Chosen controller configuration and simulation runner.
 
-This package is intentionally opinionated: it exposes one controller stack,
-not a benchmark menu. The chosen stack is a nonlinear MPC that tracks the
-tool-head path while optimizing side-motor thrust, cable tension, reel motion,
-and payload attitude over a finite horizon. In the plant, cable tension is
-realized by a speed-controlled reel with load-cell feedback rather than applied
-directly.
+This package exposes one fail-fast controller stack. The nonlinear MPC tracks a
+non-contact inspection path while optimizing left/right propeller thrust,
+left/right gimbal angle, and reel motion over a finite horizon. Payload attitude
+and cable tension are predicted states. Tension is produced by the compliant
+cable and speed-controlled reel rather than treated as an independently
+commandable actuator.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from cable_hybrid_controller.config import (
     MISSION_TRAJECTORY,
     WORK_PLANNER,
 )
-from cable_hybrid_controller.facade import FacadeMission, cleaning_targets, configure_skyscraper_params
+from cable_hybrid_controller.facade import FacadeMission, configure_skyscraper_params, inspection_targets
 from wall_tool_sim.wall_tool_ui import SimParams, SimState, Vec2, WallToolSimulator
 
 
@@ -41,7 +41,7 @@ def default_scenario() -> ControllerScenario:
     mission = FacadeMission(**FACADE_MISSION_OVERRIDES)
     return ControllerScenario(
         name=mission.name,
-        targets=cleaning_targets(mission),
+        targets=inspection_targets(mission),
         duration_s=DEFAULT_SCENARIO_DURATION_S,
         description=mission.description,
         facade_mission=mission,
@@ -58,8 +58,12 @@ def best_params(mission: FacadeMission | None = None) -> SimParams:
     )
 
 
-def make_simulator(params: SimParams | None = None) -> WallToolSimulator:
-    return WallToolSimulator(params or best_params())
+def make_simulator(
+    params: SimParams | None = None,
+    *,
+    external_plant: bool = False,
+) -> WallToolSimulator:
+    return WallToolSimulator(params or best_params(), external_plant=external_plant)
 
 
 def command_controller(simulator: WallToolSimulator, targets: Sequence[Vec2]) -> None:
@@ -86,7 +90,7 @@ def run_controller_session(
         state = simulator.step()
         states.append(state)
         speed = (state.payload_velocity[0] ** 2 + state.payload_velocity[1] ** 2) ** 0.5
-        if state.active_waypoints == 0 and state.tool_error < 0.10 and speed < 0.06:
+        if state.active_waypoints == 0 and state.tool_error < 0.015 and speed < 0.04:
             settled_time += active_params.dt
             if settled_time >= settle_required_s:
                 break
